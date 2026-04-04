@@ -6,9 +6,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const netConsole = new NetworkConsole(simulator);
     const $ = id => document.getElementById(id);
 
-    // Mode: 'select' | 'add' | 'cable' | 'delcable' | 'pan'
+    // Mode: 'select' | 'add' | 'cable' | 'delcable' | 'pan' | 'text'
     let mode='select';
     let isDragging=false, dragDev=null, dragOffX=0, dragOffY=0;
+    let dragAnnotation=null;
     let isPanDrag=false;
 
     // Cable state
@@ -45,12 +46,12 @@ document.addEventListener('DOMContentLoaded', () => {
         {label:'🌐',name:'Internet',group:'infra'},{label:'📡',name:'ISP',group:'infra'},
         {label:'🔥',name:'Firewall',group:'infra'},{label:'🌐',name:'Router',group:'infra'},
         {label:'🛜',name:'RouterWifi',group:'infra'},{label:'🎛️',name:'AC',group:'infra'},
-        {label:'↔️',name:'Bridge',group:'infra'},
+        {label:'↔️',name:'Bridge',group:'infra'},{label:'🔷',name:'SDWAN',group:'infra'},
         {label:'🔌',name:'Switch',group:'l2'},{label:'⚡',name:'SwitchPoE',group:'l2'},
-        {label:'📶',name:'ONT',group:'l2'},{label:'📡',name:'AP',group:'l2'},
+        {label:'📶',name:'ONT',group:'l2'},{label:'🟢',name:'OLT',group:'l2'},{label:'📡',name:'AP',group:'l2'},
         {label:'🖥️',name:'PC',group:'ep'},{label:'💻',name:'Laptop',group:'ep'},
         {label:'📱',name:'Phone',group:'ep'},{label:'🖨️',name:'Printer',group:'ep'},
-        {label:'📷',name:'Camera',group:'ep'},
+        {label:'📷',name:'Camera',group:'ep'},{label:'📹',name:'DVR',group:'ep'},
     ];
 
     function buildToolbar(){
@@ -87,16 +88,20 @@ document.addEventListener('DOMContentLoaded', () => {
         mode=m;
         $('cableMode')?.classList.toggle('active',m==='cable');
         $('delCableMode')?.classList.toggle('active',m==='delcable');
-        const labels={'select':'Selección','add':'Agregar','cable':'Cable — elige origen','delcable':'Eliminar cable — clic en línea','pan':'Pan'};
-        const colors={'select':'#94a3b8','add':'#f59e0b','cable':'#06b6d4','delcable':'#ef4444','pan':'#a78bfa'};
+        $('panMode')?.classList.toggle('active',m==='pan');
+        $('textMode')?.classList.toggle('active',m==='text');
+        const labels={'select':'Selección','add':'Agregar','cable':'Cable — elige origen','delcable':'Eliminar cable — clic en línea','pan':'Pan (mover mapa)','text':'Texto — clic para agregar'};
+        const colors={'select':'#94a3b8','add':'#f59e0b','cable':'#06b6d4','delcable':'#ef4444','pan':'#a78bfa','text':'#22c55e'};
         $('modeStatus').textContent=labels[m]||m;
         $('modeStatus').style.color=colors[m]||'#94a3b8';
         if(m!=='cable'){cableStart=null;cableStartIntf=null;simulator.hideConnPopup();}
-        simulator.canvas.style.cursor=m==='delcable'?'crosshair':m==='pan'?'grab':'default';
+        simulator.canvas.style.cursor=m==='delcable'?'crosshair':m==='pan'?'grab':m==='text'?'text':'default';
     }
 
     $('cableMode')?.addEventListener('click',()=>mode==='cable'?setMode('select'):setMode('cable'));
     $('delCableMode')?.addEventListener('click',()=>mode==='delcable'?setMode('select'):setMode('delcable'));
+    $('panMode')?.addEventListener('click',()=>mode==='pan'?setMode('select'):setMode('pan'));
+    $('textMode')?.addEventListener('click',()=>mode==='text'?setMode('select'):setMode('text'));
     $('deleteMode')?.addEventListener('click',()=>{
         if(simulator.selectedDevice){
             const nm=simulator.selectedDevice.name;
@@ -123,12 +128,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ── Mouse: unified handler ────────────────────
     simulator.canvas.addEventListener('mousedown',e=>{
-        if(e.button===1||e.button===0&&e.altKey){// middle click or alt+click = pan
+        if(e.button===1||(e.button===0&&e.altKey)||(e.button===0&&mode==='pan')){// middle click, alt+click, or pan mode
             const sc=sCoords(e);simulator.startPan(sc.x,sc.y);isPanDrag=true;
             simulator.canvas.style.cursor='grabbing';e.preventDefault();return;
         }
         if(e.button!==0)return;
         const sc=sCoords(e);const wc=simulator.screenToWorld(sc.x,sc.y);
+
+        // Text mode: add annotation or drag existing
+        if(mode==='text'){
+            const ann=simulator.findAnnotationAt(wc.x,wc.y);
+            if(ann){
+                // start dragging annotation
+                simulator.annotations.forEach(a=>a.selected=false);ann.selected=true;
+                isDragging=true;dragDev=null;dragAnnotation=ann;
+                dragOffX=wc.x-ann.x;dragOffY=wc.y-ann.y;
+                simulator.draw();
+            } else {
+                // create new annotation via prompt
+                const txt=prompt('Texto del comentario:','Comentario');
+                if(txt&&txt.trim()){simulator.addAnnotation(wc.x,wc.y,txt.trim());netConsole.writeToConsole(`📝 Texto: "${txt.trim()}"`);}
+            }
+            return;
+        }
+
         const dev=simulator.findDeviceAt(wc.x,wc.y);
 
         if(mode==='delcable'){
@@ -172,17 +195,29 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Select/drag mode
-        if(dev){
+        const ann=simulator.findAnnotationAt(wc.x,wc.y);
+        if(ann){
+            simulator.annotations.forEach(a=>a.selected=false);ann.selected=true;
+            isDragging=true;dragAnnotation=ann;dragDev=null;
+            dragOffX=wc.x-ann.x;dragOffY=wc.y-ann.y;
+            simulator.draw();
+        } else if(dev){
             isDragging=true;dragDev=dev;
             dragOffX=wc.x-dev.x;dragOffY=wc.y-dev.y;
             simulator.selectDevice(dev);netConsole.setCurrentDevice(dev);updatePanel(dev);
         } else {
+            simulator.annotations.forEach(a=>a.selected=false);
             simulator.deselectAll();simulator.draw();$('propertyContent').innerHTML='';
         }
     });
 
     simulator.canvas.addEventListener('mousemove',e=>{
         if(isPanDrag){const sc=sCoords(e);simulator.doPan(sc.x,sc.y);return;}
+        if(isDragging&&dragAnnotation){
+            const sc=sCoords(e);const wc=simulator.screenToWorld(sc.x,sc.y);
+            dragAnnotation.x=wc.x-dragOffX;dragAnnotation.y=wc.y-dragOffY;
+            simulator.draw();return;
+        }
         if(isDragging&&dragDev){
             const sc=sCoords(e);const wc=simulator.screenToWorld(sc.x,sc.y);
             dragDev.x=wc.x-dragOffX;dragDev.y=wc.y-dragOffY;
@@ -222,12 +257,23 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     simulator.canvas.addEventListener('mouseup',e=>{
-        if(isPanDrag){isPanDrag=false;simulator.endPan();simulator.canvas.style.cursor=mode==='delcable'?'crosshair':'default';return;}
-        isDragging=false;dragDev=null;
+        if(isPanDrag){isPanDrag=false;simulator.endPan();simulator.canvas.style.cursor=mode==='pan'?'grab':mode==='delcable'?'crosshair':'default';return;}
+        isDragging=false;dragDev=null;dragAnnotation=null;
+    });
+
+    // Right-click to delete annotation
+    simulator.canvas.addEventListener('contextmenu',e=>{
+        e.preventDefault();
+        const sc=sCoords(e);const wc=simulator.screenToWorld(sc.x,sc.y);
+        const ann=simulator.findAnnotationAt(wc.x,wc.y);
+        if(ann&&confirm(`¿Eliminar comentario "${ann.text}"?`)){simulator.deleteAnnotation(ann);netConsole.writeToConsole(`🗑️ Comentario eliminado`);}
     });
 
     simulator.canvas.addEventListener('dblclick',e=>{
         const sc=sCoords(e);const wc=simulator.screenToWorld(sc.x,sc.y);
+        // Check annotation first
+        const ann=simulator.findAnnotationAt(wc.x,wc.y);
+        if(ann){const txt=prompt('Editar comentario:',ann.text);if(txt&&txt.trim()){ann.text=txt.trim();simulator.draw();}return;}
         const dev=simulator.findDeviceAt(wc.x,wc.y);
         if(dev){simulator.selectDevice(dev);netConsole.setCurrentDevice(dev);simulator.openInterfaceModal(dev);updatePanel(dev);}
     });
@@ -324,11 +370,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ── Welcome ───────────────────────────────────
     netConsole.writeToConsole('╔══════════════════════════════════╗');
-    netConsole.writeToConsole('║  SIMULADOR DE RED v4.1          ║');
+    netConsole.writeToConsole('║  SIMULADOR DE RED v4.2          ║');
     netConsole.writeToConsole('╚══════════════════════════════════╝');
     netConsole.writeToConsole('🔗 Cable: clic origen → popup puerto → clic destino → popup puerto');
     netConsole.writeToConsole('🗑️ Del.Cable: clic sobre línea');
+    netConsole.writeToConsole('✋ Pan: botón Pan o Alt+clic para mover el mapa');
+    netConsole.writeToConsole('💬 Texto: clic para agregar · arrastrar para mover · doble clic para editar · clic derecho para borrar');
     netConsole.writeToConsole('🔍 Zoom: rueda ratón · +/- · F=ajustar');
-    netConsole.writeToConsole('🖱️ Pan: Alt+clic o botón medio');
     setTimeout(()=>consoleSec.classList.remove('expanded'),4500);
 });

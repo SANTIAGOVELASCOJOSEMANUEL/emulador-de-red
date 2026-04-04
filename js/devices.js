@@ -104,3 +104,38 @@ class Printer extends NetworkDevice {
     constructor(id,name,x,y){super(id,name,'Printer',x,y);this.addInterface('ETH0','LAN','100Mbps','cobre');this.addInterface('WLAN0','LAN','150Mbps','wireless');this.ipConfig={ipAddress:'0.0.0.0',subnetMask:'255.255.255.0',gateway:'',dhcpEnabled:true};}
     requestDHCP(){for(const conn of(window.simulator?.connections||[])){let other=null;if(conn.from===this)other=conn.to;else if(conn.to===this)other=conn.from;if(other){const pool=other.dhcpServer||(other.getDHCPPool&&other.getDHCPPool());if(pool){const base=pool.network.split('/')[0].split('.');const ip=`${base[0]}.${base[1]}.${base[2]}.${Math.floor(Math.random()*190)+10}`;this.ipConfig.ipAddress=ip;return{ip};}}}return null;}
 }
+class SDWAN extends NetworkDevice {
+    constructor(id,name,x,y){
+        super(id,name,'SDWAN',x,y);
+        this.nodes=[];this.policies=[];this.loadBalancing=true;this.encryption='AES-256';
+        this.underlay=['MPLS','Internet','LTE'];
+        for(let i=0;i<4;i++)this.addInterface(`WAN${i}`,'WAN','∞','wireless');
+        for(let i=0;i<4;i++)this.addInterface(`LAN${i}`,'LAN','10Gbps','fibra');
+        this.addInterface('MGMT','MGMT','1Gbps','cobre');
+        this.ipConfig={ipAddress:'10.0.0.1',subnetMask:'255.255.255.0',gateway:'',public:true};
+    }
+    addNode(net){this.nodes.push({network:net,status:'up'});}
+    addPolicy(name,priority,action){this.policies.push({name,priority,action});}
+}
+class OLT extends NetworkDevice {
+    constructor(id,name,x,y,ponPorts=16){
+        super(id,name,'OLT',x,y);
+        this.ponPorts=ponPorts;this.model='GPON OLT';
+        this.addInterface('UPLINK-FIB','UPLINK','10Gbps','fibra');
+        this.addInterface('UPLINK-FIB2','UPLINK','10Gbps','fibra');
+        for(let i=0;i<ponPorts;i++)this.addInterface(`PON${i}`,'PON','2.4Gbps','fibra');
+        this.ipConfig={ipAddress:'192.168.0.1',subnetMask:'255.255.255.0',gateway:''};
+    }
+    getUsedPorts(){return this.interfaces.filter(i=>i.type==='PON'&&i.connectedTo).length;}
+    getFreePorts(){return this.interfaces.filter(i=>i.type==='PON'&&!i.connectedTo).length;}
+}
+class DVR extends NetworkDevice {
+    constructor(id,name,x,y,channels=16){
+        super(id,name,'DVR',x,y);
+        this.channels=channels;this.storage='4TB';this.recording=true;this.resolution='4K';
+        this.addInterface('ETH0','LAN','100Mbps','cobre');
+        this.addInterface('HDMI','OUT','N/A','cobre');
+        for(let i=0;i<Math.min(channels,8);i++)this.addInterface(`CAM${i}`,'CAM-IN','100Mbps','cobre');
+        this.ipConfig={ipAddress:'0.0.0.0',subnetMask:'255.255.255.0',gateway:'',dhcpEnabled:true};
+    }
+}

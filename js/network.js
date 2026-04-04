@@ -8,6 +8,7 @@ class NetworkSimulator {
         this.canvas = document.getElementById(canvasId);
         this.ctx    = this.canvas.getContext('2d');
         this.devices=[]; this.connections=[]; this.packets=[];
+        this.annotations=[]; // text labels
         this.selectedDevice=null; this.nextId=1;
         this.simulationRunning=false; this.animationFrame=null;
         this._waveOffset=0;
@@ -132,6 +133,9 @@ class NetworkSimulator {
             Laptop:()=>new Laptop(id,name,wx,wy),
             Phone:()=>new Phone(id,name,wx,wy),
             Printer:()=>new Printer(id,name,wx,wy),
+            SDWAN:()=>new SDWAN(id,name,wx,wy),
+            OLT:()=>new OLT(id,name,wx,wy),
+            DVR:()=>new DVR(id,name,wx,wy),
         };
         const fn=map[type]; if(!fn)return null;
         const dev=fn(); this.devices.push(dev); this.draw(); return dev;
@@ -220,7 +224,7 @@ class NetworkSimulator {
     }
 
     // ── Find ──────────────────────────────────────
-    cardW(d){ return{Internet:90,ISP:80,Router:88,RouterWifi:80,Switch:88,SwitchPoE:88,Firewall:80,AC:80,ONT:72,AP:68,Bridge:68,Camera:64,PC:64,Laptop:64,Phone:56,Printer:64}[d.type]||72; }
+    cardW(d){ return{Internet:90,ISP:80,Router:88,RouterWifi:80,Switch:88,SwitchPoE:88,Firewall:80,AC:80,ONT:72,AP:68,Bridge:68,Camera:64,PC:64,Laptop:64,Phone:56,Printer:64,SDWAN:96,OLT:80,DVR:80}[d.type]||72; }
     cardH(){ return 76; }
 
     findDeviceAt(wx,wy){
@@ -283,6 +287,7 @@ class NetworkSimulator {
         this._drawGrid();
         this._drawConns();
         this._drawDevices();
+        this._drawAnnotations();
         this._drawPackets();
         ctx.restore();
         if(this.simulationRunning)this._updatePackets();
@@ -446,6 +451,9 @@ class NetworkSimulator {
             case 'Laptop':      this._icoLaptop(ctx,cx,cy,s); break;
             case 'Phone':       this._icoPhone(ctx,cx,cy,s); break;
             case 'Printer':     this._icoPrinter(ctx,cx,cy,s); break;
+            case 'SDWAN':       this._icoSDWAN(ctx,cx,cy,s); break;
+            case 'OLT':         this._icoOLT(ctx,cx,cy,s); break;
+            case 'DVR':         this._icoDVR(ctx,cx,cy,s); break;
         }
         ctx.restore();
     }
@@ -467,6 +475,77 @@ class NetworkSimulator {
     _icoLaptop(c,cx,cy,s){c.strokeStyle='#475569';c.lineWidth=1.4/this.zoom;c.beginPath();c.roundRect(cx-s*.7,cy-s*.7,s*1.4,s*.9,2/this.zoom);c.stroke();c.fillStyle='rgba(6,182,212,.15)';c.beginPath();c.roundRect(cx-s*.6,cy-s*.6,s*1.2,s*.7,2/this.zoom);c.fill();c.beginPath();c.moveTo(cx-s,cy+s*.2);c.lineTo(cx+s,cy+s*.2);c.quadraticCurveTo(cx+s*.9,cy+s*.5,cx+s*.7,cy+s*.5);c.lineTo(cx-s*.7,cy+s*.5);c.quadraticCurveTo(cx-s*.9,cy+s*.5,cx-s,cy+s*.2);c.closePath();c.stroke();}
     _icoPhone(c,cx,cy,s){c.strokeStyle='#475569';c.lineWidth=1.4/this.zoom;c.beginPath();c.roundRect(cx-s*.45,cy-s,s*.9,s*2,s*.15);c.stroke();c.fillStyle='rgba(6,182,212,.15)';c.beginPath();c.roundRect(cx-s*.35,cy-s*.8,s*.7,s*1.4,2/this.zoom);c.fill();c.fillStyle='#475569';c.beginPath();c.arc(cx,cy+s*.75,s*.12,0,Math.PI*2);c.fill();}
     _icoPrinter(c,cx,cy,s){c.strokeStyle='#475569';c.lineWidth=1.4/this.zoom;c.beginPath();c.roundRect(cx-s*.8,cy-s*.3,s*1.6,s*.7,2/this.zoom);c.stroke();c.beginPath();c.roundRect(cx-s*.5,cy+s*.4,s,s*.4,1/this.zoom);c.stroke();c.beginPath();c.roundRect(cx-s*.4,cy-s*.7,s*.8,s*.4,1/this.zoom);c.stroke();c.fillStyle='#06b6d4';c.beginPath();c.arc(cx+s*.5,cy,s*.1,0,Math.PI*2);c.fill();c.fillStyle='#22c55e';c.beginPath();c.arc(cx+s*.3,cy,s*.08,0,Math.PI*2);c.fill();}
+    _icoSDWAN(c,cx,cy,s){
+        // Hexagon shape with network lines
+        c.strokeStyle='#a78bfa';c.lineWidth=1.5/this.zoom;
+        const hex=[];for(let i=0;i<6;i++){const a=i*Math.PI/3-Math.PI/6;hex.push({x:cx+s*Math.cos(a),y:cy+s*Math.sin(a)});}
+        c.beginPath();c.moveTo(hex[0].x,hex[0].y);hex.forEach(p=>c.lineTo(p.x,p.y));c.closePath();c.stroke();
+        // inner circle
+        c.strokeStyle='rgba(167,139,250,.5)';c.beginPath();c.arc(cx,cy,s*.4,0,Math.PI*2);c.stroke();
+        // connecting lines
+        [[0,3],[1,4],[2,5]].forEach(([a,b])=>{c.strokeStyle='rgba(167,139,250,.4)';c.beginPath();c.moveTo(hex[a].x,hex[a].y);c.lineTo(hex[b].x,hex[b].y);c.stroke();});
+        c.fillStyle='#a78bfa';c.font=`bold ${s*.28}px sans-serif`;c.textAlign='center';c.textBaseline='middle';c.fillText('SD',cx,cy);
+    }
+    _icoOLT(c,cx,cy,s){
+        c.strokeStyle='#22c55e';c.lineWidth=1.4/this.zoom;
+        c.beginPath();c.roundRect(cx-s,cy-s*.45,s*2,s*.9,2/this.zoom);c.stroke();
+        // PON fiber burst
+        for(let i=0;i<5;i++){c.strokeStyle=`rgba(34,197,94,${.9-i*.15})`;c.lineWidth=1/this.zoom;c.beginPath();c.moveTo(cx-s*.7,cy);c.lineTo(cx-s*.7-i*s*.08,cy-(i+1)*s*.12);c.stroke();c.beginPath();c.moveTo(cx-s*.7,cy);c.lineTo(cx-s*.7-i*s*.08,cy+(i+1)*s*.12);c.stroke();}
+        // Port dots
+        for(let i=0;i<4;i++){c.fillStyle='#22c55e';c.beginPath();c.arc(cx-s*.2+i*s*.3,cy,s*.1,0,Math.PI*2);c.fill();}
+        c.fillStyle='#22c55e';c.font=`bold ${s*.25}px sans-serif`;c.textAlign='center';c.textBaseline='middle';c.fillText('OLT',cx+s*.6,cy);
+    }
+    _icoDVR(c,cx,cy,s){
+        c.strokeStyle='#64748b';c.lineWidth=1.4/this.zoom;
+        c.beginPath();c.roundRect(cx-s*.9,cy-s*.5,s*1.8,s,2/this.zoom);c.stroke();
+        // Camera grid
+        for(let i=0;i<4;i++){const gx=cx-s*.5+i%2*s*.6;const gy=cy-s*.15+Math.floor(i/2)*s*.35;c.strokeStyle='rgba(100,116,139,.7)';c.beginPath();c.roundRect(gx-s*.25,gy-s*.14,s*.5,s*.28,1/this.zoom);c.stroke();c.fillStyle='rgba(100,116,139,.4)';c.beginPath();c.arc(gx,gy,s*.1,0,Math.PI*2);c.fill();}
+        // REC dot
+        c.fillStyle='#ef4444';c.shadowColor='#ef4444';c.shadowBlur=4/this.zoom;c.beginPath();c.arc(cx+s*.75,cy-s*.35,s*.1,0,Math.PI*2);c.fill();c.shadowBlur=0;
+        c.fillStyle='#ef4444';c.font=`bold ${s*.2}px sans-serif`;c.textAlign='center';c.textBaseline='middle';c.fillText('REC',cx+s*.75,cy-s*.1);
+    }
+
+    // ── Annotations ───────────────────────────────
+    addAnnotation(wx,wy,text='Comentario'){
+        const ann={id:`ann${Date.now()}`,x:wx,y:wy,text,selected:false,color:'#f59e0b'};
+        this.annotations.push(ann);this.draw();return ann;
+    }
+    deleteAnnotation(ann){this.annotations=this.annotations.filter(a=>a!==ann);this.draw();}
+    findAnnotationAt(wx,wy){
+        for(let i=this.annotations.length-1;i>=0;i--){
+            const a=this.annotations[i];
+            const w=this._annWidth(a)/2+6,h=22/this.zoom;
+            if(wx>=a.x-w&&wx<=a.x+w&&wy>=a.y-h&&wy<=a.y+h) return a;
+        }
+        return null;
+    }
+    _annWidth(a){
+        const ctx=this.ctx;ctx.save();ctx.font=`bold ${13/this.zoom}px "JetBrains Mono",monospace`;
+        const w=ctx.measureText(a.text).width;ctx.restore();return w;
+    }
+    _drawAnnotations(){
+        const ctx=this.ctx;const dark=this.darkMode;
+        this.annotations.forEach(a=>{
+            ctx.save();
+            const fs=13/this.zoom;ctx.font=`bold ${fs}px "JetBrains Mono",monospace`;
+            const tw=ctx.measureText(a.text).width;
+            const pad=8/this.zoom,bh=22/this.zoom,bw=tw+pad*2;
+            // Shadow glow on selected
+            if(a.selected){ctx.shadowColor=a.color;ctx.shadowBlur=10/this.zoom;}
+            // Background pill
+            ctx.fillStyle=dark?'rgba(13,17,23,.88)':'rgba(255,255,255,.92)';
+            ctx.strokeStyle=a.selected?'#fff':a.color;
+            ctx.lineWidth=(a.selected?2:1.5)/this.zoom;
+            ctx.beginPath();ctx.roundRect(a.x-bw/2,a.y-bh/2,bw,bh,bh/2);ctx.fill();ctx.stroke();
+            // Pin triangle below
+            ctx.fillStyle=a.color;
+            ctx.beginPath();ctx.moveTo(a.x-5/this.zoom,a.y+bh/2);ctx.lineTo(a.x+5/this.zoom,a.y+bh/2);ctx.lineTo(a.x,a.y+bh/2+8/this.zoom);ctx.closePath();ctx.fill();
+            // Text
+            ctx.shadowBlur=0;ctx.fillStyle=a.color;ctx.textAlign='center';ctx.textBaseline='middle';
+            ctx.fillText(a.text,a.x,a.y);
+            ctx.restore();
+        });
+    }
 
     // ── Packets ───────────────────────────────────
     _drawPackets(){
@@ -492,7 +571,7 @@ class NetworkSimulator {
     startSimulation(){this.simulationRunning=true;this._anim();}
     stopSimulation(){this.simulationRunning=false;if(this.animationFrame)cancelAnimationFrame(this.animationFrame);}
     _anim(){if(!this.simulationRunning)return;this.draw();this.animationFrame=requestAnimationFrame(this._anim.bind(this));}
-    clear(){this.devices=[];this.connections=[];this.packets=[];this.selectedDevice=null;this.nextId=1;this.draw();}
+    clear(){this.devices=[];this.connections=[];this.packets=[];this.annotations=[];this.selectedDevice=null;this.nextId=1;this.draw();}
     setISPStatus(isp,st){isp.status=st;this.connections.forEach(c=>{if(c.from===isp||c.to===isp)c.status=st;});this.draw();}
     resetZoom(){this.zoom=1;this.panX=0;this.panY=0;this.draw();}
     fitAll(){
