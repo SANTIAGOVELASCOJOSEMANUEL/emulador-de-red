@@ -184,6 +184,8 @@ class NetworkSimulator {
         // MAC table solo en switches
         if (['Switch', 'SwitchPoE'].includes(dev.type)) {
             dev._macTable = new MACTable();
+            // Inicializar VLANEngine para separación de tráfico L2
+            if (!dev._vlanEngine) dev._vlanEngine = new VLANEngine(dev);
         }
 
         // Routing table en routers y firewalls
@@ -288,7 +290,7 @@ class NetworkSimulator {
         });
 
         // Actualizar routing tables
-        setTimeout(() => buildRoutingTables(this.devices, this.connections), 800);
+        setTimeout(() => buildRoutingTables(this.devices, this.connections, msg => this._log(msg)), 800);
 
         // Auto-inherit VLAN if switch connects to a gateway LAN port
         this._autoInheritVlan(d1, d2, i1, i2);
@@ -332,7 +334,7 @@ class NetworkSimulator {
         best.toInterface.connectedTo = null;   best.toInterface.connectedInterface = null;
         this.connections = this.connections.filter(c => c !== best);
         this.engine.removeEdge(best.from.id, best.to.id);
-        buildRoutingTables(this.devices, this.connections);
+        buildRoutingTables(this.devices, this.connections, msg => this._log(msg));
         this.draw();
         return best;
     }
@@ -491,6 +493,37 @@ class NetworkSimulator {
         // Paquetes internos (ARP, DHCP, pong) omiten validación IP
         const skipValidation = ['arp', 'arp-reply', 'dhcp', 'pong'].includes(type) || opts.forcePath;
 
+        // ── Inter-VLAN routing check ─────────────────────────────────────
+        // Si src y dst están en VLANs distintas del mismo switch, necesitamos
+        // pasar por el router (router-on-a-stick). El paquete no puede ir directo.
+        if (!skipValidation && !opts._interVlan) {
+            const vlanCheck = InterVLANRouter.check(src, dst, this.devices, this.connections);
+            if (vlanCheck.needed) {
+                const router = InterVLANRouter.findRouter(
+                    vlanCheck.switchDev, vlanCheck.vlanSrc, vlanCheck.vlanDst,
+                    this.devices, this.connections
+                );
+                if (router) {
+                    this._log(`🔀 Inter-VLAN: VLAN${vlanCheck.vlanSrc} → VLAN${vlanCheck.vlanDst} vía ${router.name}`);
+                    // Fase 1: src → router (trunk, etiquetado VLAN src)
+                    this.sendPacket(src, router, type, size, {
+                        ...opts, _interVlan: true, _vlanTag: vlanCheck.vlanSrc, ttl: (opts.ttl || 64) - 1,
+                    });
+                    // Fase 2: router → dst (trunk, etiquetado VLAN dst) — con delay para animación
+                    setTimeout(() => {
+                        this.sendPacket(router, dst, type, size, {
+                            ...opts, _interVlan: true, _vlanTag: vlanCheck.vlanDst, ttl: (opts.ttl || 64) - 1,
+                        });
+                    }, 600);
+                    return null;
+                } else {
+                    this._log(`❌ Inter-VLAN bloqueado: no hay router con IPs en VLAN${vlanCheck.vlanSrc} y VLAN${vlanCheck.vlanDst}`);
+                    this._log(`  Conecta un router al switch con IPs en ambas redes`);
+                    return null;
+                }
+            }
+        }
+
         // ── Validación de ruta IP ────────────────────────────────────────
         if (!skipValidation) {
             const ipCheck = this._validateIPPath(src, dst);
@@ -583,35 +616,211 @@ class NetworkSimulator {
         return pkt;
     }
 
-    /** Simula ARP request (broadcast amarillo) → ARP reply (naranja) */
+    /**
+     * _sendARP — ARP request / reply correcto.
+     *
+     * Reglas reales que se respetan:
+     *  1. ARP es L2: nunca cruza un router. Si el destino está en otra subred,
+     *     el request va al gateway (quien tiene la MAC del router en ese segmento).
+     *  2. El request es broadcast en el segmento local → todos los dispositivos
+     *     del segmento lo reciben, no solo el destino.
+     *  3. La MAC solo se aprende cuando el ARP reply LLEGA de vuelta al origen,
+     *     no antes (el aprendizaje estaba ocurriendo antes de la animación).
+     *  4. El dispositivo que responde también aprende la MAC del origen
+     *     (ARP bidireccional — así funciona en real).
+     *
+     * @param {NetworkDevice} src       — quien pregunta
+     * @param {NetworkDevice} dst       — IP que se busca resolver
+     * @param {Function}      callback  — se llama cuando el reply llega al src
+     */
     _sendARP(src, dst, callback) {
-        const dstIP = dst.ipConfig?.ipAddress || '?';
-        this._log(`🔍 ARP: ${src.name} pregunta ¿quién tiene ${dstIP}?`);
+        const srcIP  = src.ipConfig?.ipAddress;
+        const dstIP  = dst.ipConfig?.ipAddress || '?';
+        const srcMask = src.ipConfig?.subnetMask || '255.255.255.0';
 
-        // Paquete ARP request (broadcast)
-        const ruta = this.engine.findRoute(src.id, dst.id);
-        if (!ruta.length) { this._log(`❌ Sin ruta ARP: ${src.name} → ${dst.name}`); return; }
+        // ── Regla 1: ARP es L2, no cruza routers ─────────────────────────
+        // Si el dst está en otra subred, resolvemos la MAC del gateway,
+        // no la del host destino (igual que en una red real).
+        const sameSegment = srcIP && dstIP !== '?'
+            ? NetUtils.inSameSubnet(srcIP, dstIP, srcMask)
+            : true;
 
-        const arpReq = new Packet({ origen: src, destino: dst, ruta, tipo: 'arp', ttl: 1, unicast: false });
+        let arpTarget = dst; // dispositivo al que va el ARP request
+        if (!sameSegment) {
+            const gwIP  = src.ipConfig?.gateway;
+            const gwDev = gwIP ? this.devices.find(d => d.ipConfig?.ipAddress === gwIP) : null;
+            if (gwDev) {
+                arpTarget = gwDev;
+                this._log(`🔍 ARP: ${src.name} resuelve gateway ${gwIP} (${gwDev.name}) para alcanzar ${dstIP}`);
+            } else {
+                this._log(`❌ ARP: sin gateway para resolver ${dstIP} desde ${src.name}`);
+                return;
+            }
+        } else {
+            this._log(`🔍 ARP: ${src.name} pregunta ¿quién tiene ${dstIP}?`);
+        }
+
+        // ── Regla 2: Broadcast en el segmento local ───────────────────────
+        // Encontrar todos los dispositivos en el mismo segmento (sin cruzar routers)
+        const segmentDevices = this._getSegmentDevices(src);
+
+        // Ruta física hacia el arpTarget (puede pasar por switches)
+        const ruta = this.engine.findRoute(src.id, arpTarget.id);
+        if (!ruta.length) {
+            this._log(`❌ ARP: sin ruta física hacia ${arpTarget.name}`);
+            return;
+        }
+
+        // Animar el broadcast ARP (amarillo) hacia el target y al resto del segmento
+        const arpReq = new Packet({
+            origen  : src,
+            destino : arpTarget,
+            ruta,
+            tipo    : 'arp',
+            ttl     : 1,
+            unicast : false,
+            payload : { srcIP, srcMAC: src.interfaces[0]?.mac, targetIP: dstIP },
+        });
         arpReq.speed = 0.025;
         this.packets.push(arpReq);
 
-        // Después: ARP reply + aprender MAC
-        const replyDelay = (ruta.length * 60) + 200;
+        // Broadcast visual a otros dispositivos del segmento (excepto target y src)
+        segmentDevices.forEach(d => {
+            if (d === src || d === arpTarget) return;
+            const r = this.engine.findRoute(src.id, d.id);
+            if (!r.length) return;
+            const bcast = new Packet({ origen: src, destino: d, ruta: r, tipo: 'arp', ttl: 1, unicast: false });
+            bcast.speed = 0.02;
+            // Los otros dispositivos aprenden la MAC del origen (ARP piggybacking)
+            bcast._arpLearnSrc = { ip: srcIP, mac: src.interfaces[0]?.mac, id: src.id };
+            this.packets.push(bcast);
+        });
+
+        // ── Regla 3 & 4: Reply y aprendizaje solo cuando llega ───────────
+        // El delay representa el tiempo de viaje del request + procesamiento + reply
+        const replyDelay = (ruta.length * 70) + 250;
         setTimeout(() => {
-            // Aprender MAC
-            if (dst.interfaces[0]) {
-                src._arpCache?.learn(dstIP, dst.interfaces[0].mac, dst.id);
-                this._log(`✅ ARP reply: ${dst.name} tiene ${dstIP} (${dst.interfaces[0].mac})`);
+            const targetMAC = arpTarget.interfaces[0]?.mac || '00:00:00:00:00:00';
+
+            // El target aprende la MAC del origen (ARP bidireccional)
+            if (!arpTarget._arpCache) arpTarget._arpCache = new ARPCache();
+            if (srcIP && src.interfaces[0]?.mac) {
+                arpTarget._arpCache.learn(srcIP, src.interfaces[0].mac, src.id);
             }
-            // Paquete ARP reply
+
+            // Animar ARP reply (naranja) de vuelta al origen
             const rutaReply = [...ruta].reverse();
-            const arpRep = new Packet({ origen: dst, destino: src, ruta: rutaReply, tipo: 'arp-reply', ttl: 1, unicast: true });
+            const arpRep = new Packet({
+                origen  : arpTarget,
+                destino : src,
+                ruta    : rutaReply,
+                tipo    : 'arp-reply',
+                ttl     : 1,
+                unicast : true,
+                payload : { srcIP: arpTarget.ipConfig?.ipAddress, srcMAC: targetMAC, targetIP: srcIP },
+            });
             arpRep.speed = 0.025;
+            // El aprendizaje ocurre cuando el reply LLEGA (manejado en _updatePackets)
+            arpRep._arpReplyFor = { src, ip: arpTarget.ipConfig?.ipAddress, mac: targetMAC, id: arpTarget.id, callback };
             this.packets.push(arpRep);
-            // Callback tras el reply
-            setTimeout(() => callback && callback(), 300);
+
+            this._log(`📨 ARP reply: ${arpTarget.name} responde con MAC ${targetMAC}`);
         }, replyDelay);
+    }
+
+    /**
+     * _getSegmentDevices — Devuelve todos los dispositivos en el mismo
+     * segmento L2 que src (sin cruzar routers, respetando VLANs).
+     *
+     * Reglas:
+     *  - El BFS se detiene en routers (ARP es L2).
+     *  - Al cruzar un switch con VLANEngine activo, solo se pasa si
+     *    el puerto de entrada y salida comparten la misma VLAN.
+     *    Esto garantiza que el broadcast no cruce dominios VLAN.
+     */
+    _getSegmentDevices(src) {
+        const routerTypes = ['Router', 'RouterWifi', 'Firewall', 'SDWAN', 'Internet', 'ISP'];
+        const switchTypes = ['Switch', 'SwitchPoE'];
+        const result  = [];
+        const visited = new Set([src.id]);
+        // queue: { device, incomingVlan } — VLAN con la que llegamos a este dispositivo
+        const queue   = [{ dev: src, incomingVlan: null }];
+
+        while (queue.length) {
+            const { dev: cur, incomingVlan } = queue.shift();
+
+            this.connections.forEach(c => {
+                const neighbor    = c.from === cur ? c.to   : c.to === cur ? c.from : null;
+                const curIntf     = c.from === cur ? c.fromInterface : c.toInterface;
+                const neighborIntf = c.from === cur ? c.toInterface  : c.fromInterface;
+                if (!neighbor || visited.has(neighbor.id)) return;
+
+                // ── VLAN check al cruzar un switch ──────────────────────
+                if (switchTypes.includes(cur.type) && cur._vlanEngine) {
+                    const ve = cur._vlanEngine;
+
+                    // Encontrar por qué puerto entró el paquete al switch
+                    const inIntfConn = this.connections.find(c2 => {
+                        const n = c2.from === cur ? c2.to : c2.to === cur ? c2.from : null;
+                        return n === src || n?.id === src.id;
+                    });
+                    const inIntfName = inIntfConn
+                        ? (inIntfConn.from === cur ? inIntfConn.fromInterface?.name : inIntfConn.toInterface?.name)
+                        : null;
+
+                    const vlanIn  = inIntfName ? ve.getVlanForPort(inIntfName) : (incomingVlan || 1);
+                    const outIntfName = curIntf?.name;
+
+                    // El broadcast solo sale por puertos de la misma VLAN
+                    if (outIntfName && !ve.canForward(inIntfName || outIntfName, outIntfName, vlanIn)) {
+                        return; // VLAN diferente — no pasar
+                    }
+                }
+
+                visited.add(neighbor.id);
+                result.push(neighbor);
+
+                // No cruzar routers (ARP es L2), pero sí switches y hosts
+                if (!routerTypes.includes(neighbor.type)) {
+                    const vlan = switchTypes.includes(cur.type) && cur._vlanEngine
+                        ? cur._vlanEngine.getVlanForPort(curIntf?.name)
+                        : incomingVlan;
+                    queue.push({ dev: neighbor, incomingVlan: vlan });
+                }
+            });
+        }
+        return result;
+    }
+
+    /**
+     * _sendGratuitousARP — Un dispositivo anuncia su propia IP/MAC al segmento.
+     * Ocurre cuando un host obtiene una IP (ej: por DHCP) o al arrancar.
+     * Sirve para que los vecinos actualicen sus caches ARP sin tener que preguntar.
+     */
+    _sendGratuitousARP(device) {
+        const ip  = device.ipConfig?.ipAddress;
+        const mac = device.interfaces[0]?.mac;
+        if (!ip || ip === '0.0.0.0' || !mac) return;
+
+        this._log(`📢 Gratuitous ARP: ${device.name} anuncia ${ip} (${mac})`);
+
+        const segmentDevices = this._getSegmentDevices(device);
+        segmentDevices.forEach(d => {
+            const ruta = this.engine.findRoute(device.id, d.id);
+            if (!ruta.length) return;
+            const garp = new Packet({
+                origen  : device,
+                destino : d,
+                ruta,
+                tipo    : 'arp',
+                ttl     : 1,
+                unicast : false,
+                payload : { srcIP: ip, srcMAC: mac, targetIP: ip }, // sender = target (gratuitous)
+            });
+            garp.speed = 0.02;
+            garp._arpLearnSrc = { ip, mac, id: device.id };
+            this.packets.push(garp);
+        });
     }
 
     /** Broadcast al segmento local */
@@ -767,32 +976,75 @@ class NetworkSimulator {
 
             const currIndex = Math.floor(p.position);
 
-            // ── Decremento de TTL por salto real ──────────────────────────
-            // El TTL baja 1 cada vez que el paquete cruza un router/firewall,
-            // no de forma continua. Esto replica el comportamiento real de IP.
+            // ── Procesamiento por salto: TTL en routers + MAC learning en switches ──
             if (currIndex > prevIndex && currIndex < pathLen) {
                 const hopId  = p.ruta[currIndex];
                 const hopDev = this.devices.find(d => d.id === hopId);
                 const routerTypes = ['Router', 'RouterWifi', 'Firewall', 'SDWAN', 'Internet', 'ISP'];
+                const switchTypes = ['Switch', 'SwitchPoE'];
 
-                if (hopDev && routerTypes.includes(hopDev.type)) {
-                    p.ttl = Math.max(0, p.ttl - 1);
+                if (hopDev) {
 
-                    // ── ICMP Time Exceeded ─────────────────────────────────
-                    // Si el TTL llegó a 0 en este router, el router descarta
-                    // el paquete y envía un ICMP Time Exceeded de vuelta al origen.
-                    if (p.ttl === 0) {
-                        p.status = 'expired';
-                        if (p._ls) p._ls.dequeue();
-                        if (p._src) p._src._congestionQueue = Math.max(0, p._src._congestionQueue - 1);
+                    // ── Decremento de TTL en routers ──────────────────────
+                    if (routerTypes.includes(hopDev.type)) {
+                        const skipTTL = ['arp', 'arp-reply', 'dhcp', 'icmp-ttl'].includes(p.tipo);
+                        if (!skipTTL) {
+                            p.ttl = Math.max(0, p.ttl - 1);
 
-                        const routerName = hopDev.name;
-                        const routerIP   = hopDev.ipConfig?.ipAddress || '?';
-                        this._log(`⛔ TTL=0 en ${routerName} (${routerIP}) — ICMP Time Exceeded → ${p.origen?.name}`);
+                            if (p.ttl === 0) {
+                                p.status = 'expired';
+                                if (p._ls) p._ls.dequeue();
+                                if (p._src) p._src._congestionQueue = Math.max(0, p._src._congestionQueue - 1);
+                                const routerIP = hopDev.ipConfig?.ipAddress || '?';
+                                this._log(`⛔ TTL=0 en ${hopDev.name} (${routerIP}) — ICMP Time Exceeded → ${p.origen?.name}`);
+                                this._sendICMPTimeExceeded(hopDev, p.origen, routerIP);
+                                return;
+                            }
+                        }
+                    }
 
-                        // Enviar ICMP Time Exceeded animado de vuelta al origen
-                        this._sendICMPTimeExceeded(hopDev, p.origen, routerIP);
-                        return;
+                    // ── MAC learning en switches ──────────────────────────
+                    // El switch aprende la MAC origen en el puerto de entrada.
+                    // Si ya conoce la MAC destino → forwarding unicast (lo logueamos).
+                    // Si no → flooding (la ruta calculada ya cubre el segmento).
+                    if (switchTypes.includes(hopDev.type)) {
+                        if (!hopDev._macTable) hopDev._macTable = new MACTable();
+
+                        const srcMAC = p.origen?.interfaces[0]?.mac;
+                        const dstMAC = p.destino?.interfaces[0]?.mac;
+
+                        // Puerto de entrada = nodo anterior en la ruta
+                        const prevId  = p.ruta[currIndex - 1];
+                        const prevDev = this.devices.find(d => d.id === prevId);
+                        const inPort  = prevDev
+                            ? (hopDev.interfaces.find(i => i.connectedTo?.id === prevId || i.connectedTo === prevId)?.name || prevDev.name)
+                            : 'unknown';
+
+                        // Aprender MAC origen
+                        if (srcMAC && srcMAC !== '00:00:00:00:00:00') {
+                            const wasUnknown = !hopDev._macTable.lookup(srcMAC);
+                            hopDev._macTable.learn(srcMAC, inPort, p.origen?.id);
+                            if (wasUnknown) {
+                                this._log(`📚 ${hopDev.name}: aprendió ${srcMAC} → puerto ${inPort} (${p.origen?.name})`);
+                            }
+                        }
+
+                        // Decisión de forwarding
+                        if (dstMAC && dstMAC !== 'ff:ff:ff:ff:ff:ff') {
+                            const entry = hopDev._macTable.lookup(dstMAC);
+                            if (entry) {
+                                if (entry.port === inPort) {
+                                    // Src y dst en el mismo puerto → descartar (evitar loop)
+                                    p.status = 'expired';
+                                    this._log(`🔁 ${hopDev.name}: descartado (loop detectado, mismo puerto ${inPort})`);
+                                    return;
+                                }
+                                // Forwarding unicast conocido — ruta ya es correcta
+                            } else {
+                                // MAC destino desconocida → flooding
+                                this._log(`🌊 ${hopDev.name}: flooding (MAC ${dstMAC} desconocida)`);
+                            }
+                        }
                     }
                 }
             }
@@ -804,13 +1056,31 @@ class NetworkSimulator {
 
                 const tipo = p.tipo || p.type;
 
-                // Aprender MAC en destino (ARP)
-                if (p.destino?._arpCache && p.origen?.ipConfig?.ipAddress && p.origen.interfaces[0]) {
-                    p.destino._arpCache.learn(
-                        p.origen.ipConfig.ipAddress,
-                        p.origen.interfaces[0].mac,
-                        p.origen.id
-                    );
+                // Aprender MAC en destino (ARP piggybacking — todos aprenden del origen)
+                if (p._arpLearnSrc && p.destino?._arpCache) {
+                    const { ip, mac, id } = p._arpLearnSrc;
+                    p.destino._arpCache.learn(ip, mac, id);
+                }
+
+                // ARP reply llegó al origen → ahora sí aprende la MAC y dispara callback
+                if (tipo === 'arp-reply' && p._arpReplyFor) {
+                    const { src, ip, mac, id, callback } = p._arpReplyFor;
+                    if (src?._arpCache && ip && mac) {
+                        src._arpCache.learn(ip, mac, id);
+                        this._log(`✅ ARP cache actualizado: ${src.name} sabe que ${ip} → ${mac}`);
+                    }
+                    setTimeout(() => callback && callback(), 50);
+                }
+
+                // Aprender MAC en destino (flujo normal de datos)
+                if (tipo !== 'arp' && tipo !== 'arp-reply') {
+                    if (p.destino?._arpCache && p.origen?.ipConfig?.ipAddress && p.origen.interfaces[0]) {
+                        p.destino._arpCache.learn(
+                            p.origen.ipConfig.ipAddress,
+                            p.origen.interfaces[0].mac,
+                            p.origen.id
+                        );
+                    }
                 }
 
                 // Respuesta ping → pong
@@ -932,35 +1202,70 @@ class NetworkSimulator {
 
     // ── Routing tables ────────────────────────────
     rebuildRoutingTables() {
-        buildRoutingTables(this.devices, this.connections);
-        this._log('🔄 Tablas de rutas reconstruidas');
+        buildRoutingTables(this.devices, this.connections, msg => this._log(msg));
     }
 
     showRoutingTable(device) {
         if (!device.routingTable) { this._log(`${device.name} no tiene tabla de rutas`); return; }
-        this._log(`\n📋 Tabla de rutas: ${device.name}`);
-        this._log('  Red              Máscara          Gateway          If    Métrica');
-        this._log('  ' + '─'.repeat(70));
-        device.routingTable.entries().forEach(r => {
-            const net = r.network.padEnd(16), mask = r.mask.padEnd(16), gw = (r.gateway || 'directo').padEnd(16);
-            this._log(`  ${net} ${mask} ${gw} ${r.iface.padEnd(5)} ${r.metric}`);
-        });
+        const entries = device.routingTable.entries();
+        this._log(`\n📋 Tabla de Rutas: ${device.name} (${entries.length} ruta${entries.length !== 1 ? 's' : ''})`);
+        this._log(`  C=Conectada  R=RIP  S=Estática  S*=Default`);
+        this._log(`${'─'.repeat(65)}`);
+        this._log(`  Tipo  Red               Máscara          Gateway          Métrica`);
+        this._log(`${'─'.repeat(65)}`);
+        if (!entries.length) {
+            this._log('  (vacía — conecta el router a la red)');
+        } else {
+            entries.forEach(r => {
+                const tipo   = (r._type || 'S').padEnd(4);
+                const net    = r.network.padEnd(17);
+                const mask   = r.mask.padEnd(17);
+                const gw     = (r.gateway || 'directa').padEnd(17);
+                const metric = r.metric === 0 ? '—' : String(r.metric);
+                this._log(`  ${tipo}  ${net} ${mask} ${gw} ${metric}`);
+            });
+        }
+        this._log(`${'─'.repeat(65)}`);
     }
 
     showARPTable(device) {
         if (!device._arpCache) { this._log(`${device.name} no tiene ARP cache`); return; }
         const entries = device._arpCache.entries();
-        this._log(`\n📋 ARP Cache: ${device.name} (${entries.length} entradas)`);
-        entries.forEach(e => this._log(`  ${e.ip.padEnd(16)} → ${e.mac}`));
-        if (!entries.length) this._log('  (vacío)');
+        this._log(`\n📋 ARP Cache: ${device.name} (${entries.length} entrada${entries.length !== 1 ? 's' : ''})`);
+        this._log(`${'─'.repeat(52)}`);
+        this._log(`  IP Address         MAC Address           Edad`);
+        this._log(`${'─'.repeat(52)}`);
+        if (!entries.length) {
+            this._log('  (vacía — se llena con tráfico ARP)');
+        } else {
+            entries.forEach(e => {
+                const age = e.expiresAt
+                    ? Math.round((e.expiresAt - Date.now()) / 1000) + 's restantes'
+                    : '—';
+                this._log(`  ${e.ip.padEnd(18)} ${e.mac.padEnd(21)} ${age}`);
+            });
+        }
+        this._log(`${'─'.repeat(52)}`);
     }
 
     showMACTable(device) {
         if (!device._macTable) { this._log(`${device.name} no es un switch`); return; }
         const entries = device._macTable.entries();
-        this._log(`\n📋 MAC Table: ${device.name} (${entries.length} entradas)`);
-        entries.forEach(e => this._log(`  ${e.mac}  puerto: ${e.port}`));
-        if (!entries.length) this._log('  (vacío — se llena con tráfico)');
+        this._log(`\n📋 MAC Address Table: ${device.name} (${entries.length} entrada${entries.length !== 1 ? 's' : ''})`);
+        this._log(`${'─'.repeat(54)}`);
+        this._log(`  VLAN   MAC Address          Puerto         Dispositivo`);
+        this._log(`${'─'.repeat(54)}`);
+        if (!entries.length) {
+            this._log('  (vacía — se llena automáticamente con tráfico)');
+        } else {
+            entries.forEach(e => {
+                const dev = this.devices.find(d => d.id === e.deviceId);
+                const devName = dev ? dev.name : '?';
+                const age = Math.round((Date.now() - e.learnedAt) / 1000);
+                this._log(`  1      ${e.mac.padEnd(20)} ${(e.port || '?').padEnd(14)} ${devName} (${age}s)`);
+            });
+        }
+        this._log(`${'─'.repeat(54)}`);
     }
 
     // ── PERSISTENCIA ─────────────────────────────
@@ -1035,7 +1340,7 @@ class NetworkSimulator {
                 this.engine.setEdgeStatus(c.from.id, c.to.id, st);
             }
         });
-        buildRoutingTables(this.devices, this.connections);
+        buildRoutingTables(this.devices, this.connections, msg => this._log(msg));
         this.draw();
     }
 

@@ -170,6 +170,35 @@ class Switch extends NetworkDevice {
     this.addInterface('FIB-IN','UPLINK','10Gbps','fibra');this.addInterface('FIB-OUT','UPLINK','10Gbps','fibra');for(let i=2;i<ports;i++)this.addInterface(`port${i}`,'LAN','1Gbps','cobre');}
     addVLAN(id,n,net,gw){if(!this.vlans[id]&&this.configurable){this.vlans[id]={name:n,network:net,gateway:gw};return true;}return false;}
     setInheritedVlan(vlanCfg){this.inheritedVlan=vlanCfg;if(vlanCfg){this.vlans[vlanCfg.vlanId]={name:`VLAN${vlanCfg.vlanId}`,network:vlanCfg.network,gateway:vlanCfg.gateway};}}
+    /** Asigna un puerto a una VLAN en modo access */
+    setPortVLAN(intfNameOrIndex, vlanId) {
+        // Inicializar VLANEngine si no existe
+        if (!this._vlanEngine) this._vlanEngine = new VLANEngine(this);
+        // Aceptar nombre de interfaz o índice numérico
+        const intf = typeof intfNameOrIndex === 'number'
+            ? this.interfaces[intfNameOrIndex]
+            : this.interfaces.find(i => i.name === intfNameOrIndex);
+        if (!intf) return false;
+        if (!this.vlans[vlanId]) return false;
+        intf.vlan = vlanId;
+        const result = this._vlanEngine.setAccess(intf.name, vlanId);
+        return result.ok;
+    }
+    /** Configura un puerto como trunk */
+    setTrunkPort(intfNameOrIndex, allowedVlans = [], nativeVlan = 1) {
+        if (!this._vlanEngine) this._vlanEngine = new VLANEngine(this);
+        const intf = typeof intfNameOrIndex === 'number'
+            ? this.interfaces[intfNameOrIndex]
+            : this.interfaces.find(i => i.name === intfNameOrIndex);
+        if (!intf) return false;
+        intf.vlan = nativeVlan;
+        this._vlanEngine.setTrunk(intf.name, allowedVlans, nativeVlan);
+        return true;
+    }
+    /** Inicializa el VLANEngine (llamado al agregar el switch a la red) */
+    initVLANEngine() {
+        if (!this._vlanEngine) this._vlanEngine = new VLANEngine(this);
+    }
     getDHCPPool(){
         if(this.inheritedVlan){const v=this.inheritedVlan;return{network:v.network,subnetMask:'255.255.255.0',gateway:v.gateway,dns:['8.8.8.8']};}
         const v=this.vlans[1];return v?{network:v.network,subnetMask:'255.255.255.0',gateway:v.gateway,dns:['8.8.8.8']}:null;}

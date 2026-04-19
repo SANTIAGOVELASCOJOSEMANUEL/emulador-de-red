@@ -136,6 +136,10 @@ class DHCPEngine {
             }
             this.sim.draw();
 
+            // Gratuitous ARP: el cliente anuncia su nueva IP al segmento
+            // Esto permite que los vecinos actualicen sus caches sin tener que preguntar
+            setTimeout(() => this.sim._sendGratuitousARP(client), 300);
+
             done && done({ ip, mask, gw, dns });
         });
     }

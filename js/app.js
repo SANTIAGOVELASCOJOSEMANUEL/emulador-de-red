@@ -592,6 +592,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             simulator.draw();
             netConsole.writeToConsole(`✅ IP ${device.ipConfig.ipAddress} aplicada a ${device.name}`);
+            // Gratuitous ARP: anunciar la nueva IP al segmento
+            if (simulator.simulationRunning) simulator._sendGratuitousARP(device);
             updatePanel(device);
         });
 

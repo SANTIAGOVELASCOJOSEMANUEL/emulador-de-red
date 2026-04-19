@@ -105,58 +105,178 @@ function routePacket(packet, device) {
 }
 
 /**
- * Construye las rutas estáticas de todos los routers y firewalls
- * basándose en las conexiones reales de la simulación.
+ * buildRoutingTables — Routing dinámico con Bellman-Ford iterativo (RIP-like).
+ *
+ * Algoritmo:
+ *  1. Cada router aprende sus redes directamente conectadas (métrica 0).
+ *  2. Itera: cada router anuncia sus rutas a sus vecinos router.
+ *     El vecino acepta la ruta si no la tiene o si la nueva tiene menor métrica.
+ *  3. Repite hasta que ninguna tabla cambia (convergencia) o máx 15 saltos (RIP limit).
+ *
+ * Esto resuelve cadenas Router1→Router2→Router3 automáticamente:
+ *  - Iteración 1: R1 aprende red de R2. R2 aprende red de R3.
+ *  - Iteración 2: R1 aprende red de R3 vía R2 (métrica 2).
+ *  - Convergencia.
+ *
+ * @param {NetworkDevice[]} devices
+ * @param {object[]}        connections
+ * @param {Function}        [logFn]  — callback opcional para loguear convergencia
  */
-function buildRoutingTables(devices, connections) {
-    const routers = devices.filter(d =>
-        ['Router', 'RouterWifi', 'Firewall', 'SDWAN'].includes(d.type)
-    );
+function buildRoutingTables(devices, connections, logFn) {
+    const log = logFn || (() => {});
+    const routerTypes = ['Router', 'RouterWifi', 'Firewall', 'SDWAN', 'Internet', 'ISP'];
 
+    const routers = devices.filter(d => routerTypes.includes(d.type));
+    if (!routers.length) return;
+
+    // ── Paso 1: Inicializar tablas con rutas directamente conectadas ──
     routers.forEach(router => {
-        if (!router.routingTable || !(router.routingTable instanceof RoutingTable)) {
+        if (!(router.routingTable instanceof RoutingTable)) {
             router.routingTable = new RoutingTable();
         }
-        const rt = router.routingTable;
-        rt.clear();
 
-        // Rutas directamente conectadas
-        router.interfaces.forEach(intf => {
-            if (intf.ipConfig?.ipAddress && intf.ipConfig.ipAddress !== '0.0.0.0') {
-                const net  = NetUtils.networkAddress(intf.ipConfig.ipAddress, intf.ipConfig.subnetMask || '255.255.255.0');
-                const mask = intf.ipConfig.subnetMask || '255.255.255.0';
-                rt.add(net, mask, '', intf.name, 0);
-            }
-        });
+        // Preservar rutas estáticas que el usuario configuró manualmente
+        const staticRoutes = router.routingTable.entries().filter(r => r._static);
+        router.routingTable.clear();
+        staticRoutes.forEach(r => router.routingTable.routes.push(r));
 
-        // Rutas aprendidas por vecindad
+        // Redes directamente conectadas (métrica 0, tipo 'C' = connected)
+        // Buscar vecinos directos para obtener IPs de interfaz del router
         connections.forEach(conn => {
-            let neighbor = null;
-            if (conn.from === router) neighbor = conn.to;
-            else if (conn.to === router) neighbor = conn.from;
-            if (!neighbor) return;
+            let myIntf = null, neighborDev = null;
+            if (conn.from === router) { myIntf = conn.fromInterface; neighborDev = conn.to; }
+            else if (conn.to === router) { myIntf = conn.toInterface; neighborDev = conn.from; }
+            if (!myIntf) return;
 
-            if (neighbor.ipConfig?.ipAddress && neighbor.ipConfig.ipAddress !== '0.0.0.0') {
-                const mask = neighbor.ipConfig.subnetMask || '255.255.255.0';
-                const net  = NetUtils.networkAddress(neighbor.ipConfig.ipAddress, mask);
-                if (!rt.lookup(neighbor.ipConfig.ipAddress)) {
-                    rt.add(net, mask, neighbor.ipConfig.ipAddress, '', 1);
+            // IP de la interfaz del router en este enlace
+            const myIP = myIntf.ipConfig?.ipAddress || router.ipConfig?.ipAddress;
+            const myMask = myIntf.ipConfig?.subnetMask || router.ipConfig?.subnetMask || '255.255.255.0';
+            if (myIP && myIP !== '0.0.0.0') {
+                const net = NetUtils.networkAddress(myIP, myMask);
+                if (!router.routingTable.routes.some(r => r.network === net && r.mask === myMask)) {
+                    router.routingTable.add(net, myMask, '', myIntf.name, 0);
+                    router.routingTable.routes[router.routingTable.routes.length - 1]._type = 'C';
                 }
             }
 
-            // Si el vecino es otro router, propaga sus rutas (RIP-like simplificado)
-            if (['Router', 'RouterWifi', 'Firewall'].includes(neighbor.type)) {
-                if (neighbor.routingTable instanceof RoutingTable) {
-                    neighbor.routingTable.entries().forEach(r => {
-                        if (!rt.lookup(r.network)) {
-                            rt.add(r.network, r.mask, neighbor.ipConfig?.ipAddress || '', '', r.metric + 1);
-                        }
-                    });
-                }
-                if (!rt.lookup('0.0.0.0')) {
-                    rt.setDefault(neighbor.ipConfig?.ipAddress || '', '');
+            // Red del vecino directamente conectado (métrica 1, tipo 'C')
+            const nIP   = neighborDev.ipConfig?.ipAddress;
+            const nMask = neighborDev.ipConfig?.subnetMask || '255.255.255.0';
+            if (nIP && nIP !== '0.0.0.0') {
+                const net = NetUtils.networkAddress(nIP, nMask);
+                if (!router.routingTable.routes.some(r => r.network === net)) {
+                    const gw = routerTypes.includes(neighborDev.type) ? nIP : '';
+                    router.routingTable.add(net, nMask, gw, myIntf?.name || '', 1);
+                    router.routingTable.routes[router.routingTable.routes.length - 1]._type = 'C';
                 }
             }
         });
     });
+
+    // ── Paso 2: Bellman-Ford — iterar hasta convergencia ─────────────
+    // Máximo 15 saltos (límite RIP), en la práctica converge en 2-4 rondas
+    const MAX_HOPS = 15;
+    let iteration  = 0;
+    let changed    = true;
+
+    while (changed && iteration < MAX_HOPS) {
+        changed = false;
+        iteration++;
+
+        // Construir mapa de adyacencias: router → [{ neighbor, gwIP, intfName }]
+        const adjacency = new Map();
+        routers.forEach(r => adjacency.set(r.id, []));
+
+        connections.forEach(conn => {
+            const isFromRouter = routerTypes.includes(conn.from.type);
+            const isToRouter   = routerTypes.includes(conn.to.type);
+
+            if (isFromRouter) {
+                const gwIP = conn.to.ipConfig?.ipAddress;
+                adjacency.get(conn.from.id)?.push({
+                    neighbor  : conn.to,
+                    gwIP      : gwIP || '',
+                    intfName  : conn.fromInterface?.name || '',
+                });
+            }
+            if (isToRouter) {
+                const gwIP = conn.from.ipConfig?.ipAddress;
+                adjacency.get(conn.to.id)?.push({
+                    neighbor  : conn.from,
+                    gwIP      : gwIP || '',
+                    intfName  : conn.toInterface?.name || '',
+                });
+            }
+        });
+
+        // Cada router anuncia sus rutas a vecinos router
+        routers.forEach(router => {
+            const neighbors = adjacency.get(router.id) || [];
+
+            neighbors.forEach(({ neighbor, gwIP, intfName }) => {
+                if (!routerTypes.includes(neighbor.type)) return;
+                if (!(neighbor.routingTable instanceof RoutingTable)) return;
+
+                // El vecino anuncia todas sus rutas al router
+                neighbor.routingTable.entries().forEach(remoteRoute => {
+                    // No anunciar rutas con métrica >= MAX_HOPS (split horizon simplificado)
+                    if (remoteRoute.metric >= MAX_HOPS) return;
+
+                    // No anunciar la red directamente conectada del propio router (split horizon)
+                    const isOwnNet = router.routingTable.entries().some(
+                        r => r.network === remoteRoute.network && r.mask === remoteRoute.mask && r.metric === 0
+                    );
+                    if (isOwnNet) return;
+
+                    const newMetric = remoteRoute.metric + 1;
+                    const existing  = router.routingTable.routes.find(
+                        r => r.network === remoteRoute.network && r.mask === remoteRoute.mask
+                    );
+
+                    if (!existing) {
+                        // Nueva ruta aprendida
+                        router.routingTable.add(remoteRoute.network, remoteRoute.mask, gwIP, intfName, newMetric);
+                        const newRoute = router.routingTable.routes.find(
+                            r => r.network === remoteRoute.network && r.mask === remoteRoute.mask
+                        );
+                        if (newRoute) newRoute._type = 'R'; // R = RIP
+                        changed = true;
+                    } else if (newMetric < existing.metric && !existing._static) {
+                        // Ruta mejor encontrada → actualizar
+                        existing.metric  = newMetric;
+                        existing.gateway = gwIP;
+                        existing.iface   = intfName;
+                        existing._type   = 'R';
+                        changed = true;
+                    }
+                });
+            });
+        });
+    }
+
+    log(`🔄 Routing convergido en ${iteration} iteración${iteration !== 1 ? 'es' : ''} (${routers.length} routers)`);
+
+    // ── Paso 3: Ruta por defecto hacia Internet/ISP ───────────────────
+    // Si hay un router tipo Internet/ISP, los demás routers apuntan a él como default
+    const ispRouter = devices.find(d => ['Internet', 'ISP'].includes(d.type));
+    if (ispRouter) {
+        routers.forEach(router => {
+            if (router === ispRouter) return;
+            if (router.routingTable.routes.some(r => r.network === '0.0.0.0' && !r._static)) return;
+
+            // Buscar si el router tiene conectividad con el ISP (directa o transitiva)
+            const ispIP = ispRouter.ipConfig?.ipAddress;
+            if (ispIP) {
+                const conn = connections.find(c =>
+                    (c.from === router && c.to === ispRouter) ||
+                    (c.to === router && c.from === ispRouter)
+                );
+                if (conn) {
+                    router.routingTable.setDefault(ispIP, '');
+                    const defRoute = router.routingTable.routes.find(r => r.network === '0.0.0.0');
+                    if (defRoute) defRoute._type = 'S*'; // S* = static default
+                }
+            }
+        });
+    }
 }

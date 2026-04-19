@@ -289,6 +289,146 @@ class NetworkConsole {
         }
     }
 
+    // ─── MAC TABLE ───────────────────────────────────────────────────
+
+    cmdMAC(parts) {
+        const d = this.currentDevice;
+        if (!d) { this.writeToConsole('❌ Selecciona un dispositivo'); return; }
+        const action = parts[1] || 'show';
+
+        if (action === 'show' || action === 'table') {
+            this.network.showMACTable(d);
+
+        } else if (action === 'flush' || action === 'clear') {
+            if (!d._macTable) { this.writeToConsole(`❌ ${d.name} no tiene MAC table`); return; }
+            const count = d._macTable.entries().length;
+            d._macTable.flush();
+            this.writeToConsole(`✅ MAC table de ${d.name} limpiada (${count} entradas eliminadas)`);
+            this.writeToConsole(`  El switch hará flooding hasta volver a aprender las MACs`);
+
+        } else if (action === 'aging') {
+            // Ajustar TTL de la MAC table (en segundos)
+            const secs = parseInt(parts[2]);
+            if (isNaN(secs) || secs < 10 || secs > 3600) {
+                this.writeToConsole('Uso: mac aging <10-3600>  (segundos)');
+                return;
+            }
+            if (!d._macTable) { this.writeToConsole(`❌ ${d.name} no tiene MAC table`); return; }
+            d._macTable.ttlMs = secs * 1000;
+            this.writeToConsole(`✅ MAC aging time: ${secs}s (${d.name})`);
+
+        } else {
+            this.writeToConsole('Uso: mac show | mac flush | mac aging <segundos>');
+        }
+    }
+
+    // ─── ARP ─────────────────────────────────────────────────────────
+
+    cmdARP(parts) {
+        const d = this.currentDevice;
+        if (!d) { this.writeToConsole('❌ Selecciona un dispositivo'); return; }
+        const action = parts[1] || 'show';
+
+        if (action === 'show' || action === 'table') {
+            this.network.showARPTable(d);
+
+        } else if (action === 'flush' || action === 'clear') {
+            if (!d._arpCache) { this.writeToConsole(`❌ ${d.name} no tiene ARP cache`); return; }
+            const count = d._arpCache.entries().length;
+            d._arpCache.flush();
+            this.writeToConsole(`✅ ARP cache de ${d.name} limpiada (${count} entradas eliminadas)`);
+            this.writeToConsole(`  El próximo envío disparará un ARP request`);
+
+        } else if (action === 'resolve') {
+            // Forzar resolución ARP de una IP específica
+            const targetIP = parts[2];
+            if (!targetIP) { this.writeToConsole('Uso: arp resolve <ip>'); return; }
+            const targetDev = this.network.devices.find(x => x.ipConfig?.ipAddress === targetIP);
+            if (!targetDev) { this.writeToConsole(`❌ No existe dispositivo con IP ${targetIP}`); return; }
+            this.writeToConsole(`🔍 Iniciando ARP para ${targetIP}...`);
+            this.network._sendARP(d, targetDev, () => {
+                const entry = d._arpCache?.resolve(targetIP);
+                if (entry) this.writeToConsole(`✅ ${targetIP} → ${entry.mac}`);
+            });
+
+        } else {
+            this.writeToConsole('Uso: arp show | arp flush | arp resolve <ip>');
+        }
+    }
+
+    // ─── ROUTE ───────────────────────────────────────────────────────
+
+    cmdRoute(parts) {
+        const d = this.currentDevice;
+        if (!d) { this.writeToConsole('❌ Selecciona un dispositivo'); return; }
+        if (!['Router', 'RouterWifi', 'Firewall', 'SDWAN'].includes(d.type)) {
+            this.writeToConsole('❌ Solo disponible en routers y firewalls'); return;
+        }
+        const action = parts[1] || 'show';
+
+        if (action === 'show' || action === 'table') {
+            this.network.showRoutingTable(d);
+
+        } else if (action === 'add' && parts.length >= 4) {
+            // route add <red> <mask> <gateway> [metric]
+            const net    = parts[2];
+            const mask   = parts[3];
+            const gw     = parts[4] || '';
+            const metric = parseInt(parts[5]) || 1;
+            if (!d.routingTable) d.routingTable = new RoutingTable();
+            d.routingTable.add(net, mask, gw, '', metric);
+            // Marcar como estática para que buildRoutingTables no la sobreescriba
+            const added = d.routingTable.routes.find(r => r.network === net && r.mask === mask);
+            if (added) { added._static = true; added._type = 'S'; }
+            this.writeToConsole(`✅ Ruta estática añadida: ${net}/${mask} vía ${gw || 'directa'} (métrica ${metric})`);
+
+        } else if (action === 'default' && parts[2]) {
+            // route default <gateway>
+            if (!d.routingTable) d.routingTable = new RoutingTable();
+            d.routingTable.setDefault(parts[2], '');
+            const def = d.routingTable.routes.find(r => r.network === '0.0.0.0');
+            if (def) { def._static = true; def._type = 'S*'; }
+            this.writeToConsole(`✅ Ruta por defecto: vía ${parts[2]}`);
+
+        } else if (action === 'delete' && parts[2] && parts[3]) {
+            // route delete <red> <mask>
+            if (!d.routingTable) { this.writeToConsole('❌ Sin tabla de rutas'); return; }
+            const before = d.routingTable.routes.length;
+            d.routingTable.routes = d.routingTable.routes.filter(
+                r => !(r.network === parts[2] && r.mask === parts[3])
+            );
+            const removed = before - d.routingTable.routes.length;
+            this.writeToConsole(removed
+                ? `✅ Ruta ${parts[2]}/${parts[3]} eliminada`
+                : `❌ Ruta ${parts[2]}/${parts[3]} no encontrada`
+            );
+
+        } else if (action === 'rebuild') {
+            // Reconstruir todas las tablas (convergencia RIP)
+            this.writeToConsole('🔄 Ejecutando convergencia de rutas...');
+            buildRoutingTables(
+                this.network.devices,
+                this.network.connections,
+                msg => this.writeToConsole(msg)
+            );
+            // Mostrar resumen de routers
+            this.network.devices
+                .filter(x => ['Router', 'RouterWifi', 'Firewall', 'SDWAN'].includes(x.type))
+                .forEach(r => {
+                    const n = r.routingTable?.entries().length || 0;
+                    this.writeToConsole(`  ${r.name}: ${n} ruta${n !== 1 ? 's' : ''}`);
+                });
+
+        } else {
+            this.writeToConsole('Uso:');
+            this.writeToConsole('  route show                         — Ver tabla de rutas');
+            this.writeToConsole('  route add <red> <mask> <gw> [met]  — Añadir ruta estática');
+            this.writeToConsole('  route default <gw>                 — Ruta por defecto');
+            this.writeToConsole('  route delete <red> <mask>          — Eliminar ruta');
+            this.writeToConsole('  route rebuild                      — Reconverger todas las rutas');
+        }
+    }
+
     // ─── NAT ─────────────────────────────────────────────────────────
 
     cmdNAT(parts) {
@@ -408,21 +548,76 @@ class NetworkConsole {
         const action = parts[1];
         const d = this.currentDevice;
 
-        if (['Switch','SwitchPoE'].includes(d.type)) {
-            if (action === 'add' && parts.length >= 4) {
-                const id = parseInt(parts[2]), name = parts[3];
-                const net = parts[4] || `192.168.${id}.0/24`, gw = parts[5] || `192.168.${id}.254`;
-                if (d.addVLAN(id, name, net, gw)) this.writeToConsole(`✅ VLAN ${id} (${name}) creada`);
-                else this.writeToConsole(`❌ VLAN ${id} ya existe`);
-            } else if (action === 'list') {
-                Object.entries(d.vlans).forEach(([id, v]) => this.writeToConsole(`  VLAN ${id}: ${v.name}  ${v.network}  gw=${v.gateway}`));
-            } else if (action === 'port' && parts.length >= 4) {
-                const port = parseInt(parts[2]), vid = parseInt(parts[3]);
-                if (d.setPortVLAN?.(port, vid)) this.writeToConsole(`✅ Puerto ${port} → VLAN ${vid}`);
-                else this.writeToConsole('❌ Error de asignación');
+        if (!['Switch','SwitchPoE'].includes(d.type)) {
+            this.writeToConsole('❌ Comando solo disponible en switches'); return;
+        }
+
+        // Asegurar VLANEngine inicializado
+        if (!d._vlanEngine) d._vlanEngine = new VLANEngine(d);
+
+        if (action === 'add' && parts.length >= 3) {
+            // vlan add <id> [nombre] [red] [gateway]
+            const id   = parseInt(parts[2]);
+            const name = parts[3] || `VLAN${id}`;
+            const net  = parts[4] || `192.168.${id}.0/24`;
+            const gw   = parts[5] || `192.168.${id}.254`;
+            if (isNaN(id) || id < 1 || id > 4094) { this.writeToConsole('❌ VLAN ID debe ser 1-4094'); return; }
+            if (d.addVLAN(id, name, net, gw)) {
+                this.writeToConsole(`✅ VLAN ${id} (${name}) creada — red: ${net}  gw: ${gw}`);
+            } else {
+                this.writeToConsole(`❌ VLAN ${id} ya existe`);
             }
+
+        } else if (action === 'list' || action === 'show') {
+            // Mostrar VLANs y puertos
+            d._vlanEngine.summary().forEach(l => this.writeToConsole(l));
+
+        } else if (action === 'port' || action === 'access') {
+            // vlan port <puerto> <vlan-id>   — modo access
+            if (parts.length < 4) { this.writeToConsole('Uso: vlan port <puerto> <vlan-id>'); return; }
+            const portName = parts[2];
+            const vid      = parseInt(parts[3]);
+            if (isNaN(vid)) { this.writeToConsole('❌ VLAN ID inválido'); return; }
+            if (!d.vlans[vid]) { this.writeToConsole(`❌ VLAN ${vid} no existe. Créala primero: vlan add ${vid}`); return; }
+            if (d.setPortVLAN(portName, vid)) {
+                this.writeToConsole(`✅ Puerto ${portName} → ACCESS VLAN ${vid}`);
+                this.writeToConsole(`  Dispositivos en ese puerto pertenecen a VLAN ${vid} (${d.vlans[vid].name})`);
+            } else {
+                this.writeToConsole(`❌ Puerto ${portName} no encontrado`);
+            }
+
+        } else if (action === 'trunk') {
+            // vlan trunk <puerto> [vlan1,vlan2,...] [native-vlan]
+            if (parts.length < 3) { this.writeToConsole('Uso: vlan trunk <puerto> [vlans] [native]'); return; }
+            const portName    = parts[2];
+            const allowedStr  = parts[3] || '';
+            const nativeVlan  = parseInt(parts[4]) || 1;
+            const allowedVlans = allowedStr
+                ? allowedStr.split(',').map(Number).filter(n => !isNaN(n))
+                : [];
+            if (d.setTrunkPort(portName, allowedVlans, nativeVlan)) {
+                const allowedTxt = allowedVlans.length ? allowedVlans.join(',') : 'todas';
+                this.writeToConsole(`✅ Puerto ${portName} → TRUNK (allowed: ${allowedTxt}, native: ${nativeVlan})`);
+                this.writeToConsole(`  Este puerto transporta tráfico 802.1Q etiquetado`);
+            } else {
+                this.writeToConsole(`❌ Puerto ${portName} no encontrado`);
+            }
+
+        } else if (action === 'delete' && parts[2]) {
+            // vlan delete <id>
+            const id = parseInt(parts[2]);
+            if (id === 1) { this.writeToConsole('❌ No se puede eliminar VLAN 1 (default)'); return; }
+            if (!d.vlans[id]) { this.writeToConsole(`❌ VLAN ${id} no existe`); return; }
+            delete d.vlans[id];
+            this.writeToConsole(`✅ VLAN ${id} eliminada`);
+
         } else {
-            this.writeToConsole('❌ Comando solo disponible en switches');
+            this.writeToConsole('Uso:');
+            this.writeToConsole('  vlan add <id> [nombre] [red] [gw]  — Crear VLAN');
+            this.writeToConsole('  vlan list                          — Ver VLANs y puertos');
+            this.writeToConsole('  vlan port <puerto> <vlan-id>       — Modo access');
+            this.writeToConsole('  vlan trunk <puerto> [vlans] [nat]  — Modo trunk 802.1Q');
+            this.writeToConsole('  vlan delete <id>                   — Eliminar VLAN');
         }
     }
 
@@ -459,7 +654,6 @@ class NetworkConsole {
         } else if (what === 'mac') {
             if (this.currentDevice) this.network.showMACTable(this.currentDevice);
             else this.writeToConsole('❌ Selecciona un dispositivo');
-
         } else if (what === 'links') {
             this.writeToConsole('\n🔗 ESTADO DE ENLACES:');
             this.network.connections.forEach(c => {
