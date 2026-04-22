@@ -59,7 +59,7 @@ class NetworkSimulator {
 
     // ── DRAW ─────────────────────────────────────
     draw() {
-        this._waveOffset = (this._waveOffset + 0.8) % 60;
+        // _waveOffset is advanced only by _startCableAnim / _anim to avoid double-stepping
         this.renderer.render();
         if (this.simulationRunning) this._updatePackets();
     }
@@ -1043,6 +1043,7 @@ class NetworkSimulator {
 
                             if (p.ttl === 0) {
                                 p.status = 'expired';
+                                if (window.packetAnimator) window.packetAnimator.onDropped(p);
                                 if (p._ls) p._ls.dequeue();
                                 if (p._src) p._src._congestionQueue = Math.max(0, p._src._congestionQueue - 1);
                                 const routerIP = hopDev.ipConfig?.ipAddress || '?';
@@ -1086,6 +1087,7 @@ class NetworkSimulator {
                                 if (entry.port === inPort) {
                                     // Src y dst en el mismo puerto → descartar (evitar loop)
                                     p.status = 'expired';
+                                    if (window.packetAnimator) window.packetAnimator.onDropped(p);
                                     this._log(`🔁 ${hopDev.name}: descartado (loop detectado, mismo puerto ${inPort})`);
                                     return;
                                 }
@@ -1101,6 +1103,7 @@ class NetworkSimulator {
 
             if (p.position >= pathLen - 1) {
                 p.status = 'delivered';
+                if (window.packetAnimator) window.packetAnimator.onDelivered(p);
                 if (p._ls)  p._ls.dequeue();
                 if (p._src) p._src._congestionQueue = Math.max(0, p._src._congestionQueue - 1);
 
@@ -1372,12 +1375,20 @@ class NetworkSimulator {
     stopSimulation()  { this.simulationRunning = false; if (this.animationFrame) cancelAnimationFrame(this.animationFrame); }
     _anim()           { if (!this.simulationRunning) return; this.draw(); this.animationFrame = requestAnimationFrame(this._anim.bind(this)); }
 
-    // Animación permanente de cables (cobre/fibra/wireless) — independiente de simulación
+    // Animación permanente de cables — throttled a ~30 FPS para ahorrar GPU
     _startCableAnim() {
-        const loop = () => {
-            this._waveOffset = (this._waveOffset + 0.8) % 300;
-            if (this.connections.length > 0) this.draw();
+        let lastT = 0;
+        const TARGET_MS = 1000 / 30;
+        const loop = (t) => {
             this._cableAnimFrame = requestAnimationFrame(loop);
+            if (t - lastT < TARGET_MS) return;
+            lastT = t;
+            // x2 en paso para compensar la mitad de frames y mantener velocidad visual igual
+            this._waveOffset = (this._waveOffset + 1.6) % 300;
+            const hasAnimatedConn = this.connections.some(c =>
+                c.status !== 'down'
+            );
+            if (hasAnimatedConn || this.simulationRunning) this.draw();
         };
         this._cableAnimFrame = requestAnimationFrame(loop);
     }
@@ -1397,7 +1408,10 @@ class NetworkSimulator {
     clear() {
         this.devices = []; this.connections = []; this.packets = [];
         this.annotations = []; this.selectedDevice = null;
-        this.nextId = 1; this.engine = new NetworkEngine(); this.draw();
+        this.nextId = 1; this.engine = new NetworkEngine();
+        if (window.packetAnimator) window.packetAnimator.reset();
+        if (window.arpVisualizer)  window.arpVisualizer.reset();
+        this.draw();
     }
     resetZoom() { this.zoom = 1; this.panX = 0; this.panY = 0; this.draw(); }
     fitAll() {

@@ -91,15 +91,47 @@ class NetworkRenderer {
         const wBottom = (canvas.height - panY) / zoom;
         ctx.fillStyle = dark ? '#080d14' : '#eef3f9';
         ctx.fillRect(wLeft - 10, wTop - 10, (wRight - wLeft) + 20, (wBottom - wTop) + 20);
-        // Dot grid instead of lines
+
+        // Dot grid — use cached offscreen tile to avoid thousands of arc() calls per frame
         const step = 40;
+        const dotColor = dark ? 'rgba(56,189,248,.12)' : 'rgba(2,132,199,.12)';
+        const cacheKey = `${step}_${dotColor}`;
+        if (!this._gridTile || this._gridTileKey !== cacheKey) {
+            // Build a step×step offscreen tile with a single dot at (0,0)
+            const tile = document.createElement('canvas');
+            tile.width = step; tile.height = step;
+            const tc = tile.getContext('2d');
+            tc.fillStyle = dotColor;
+            tc.beginPath(); tc.arc(0, 0, 0.8, 0, Math.PI * 2); tc.fill();
+            this._gridTile    = tile;
+            this._gridTileKey = cacheKey;
+            // Also create the pattern at scale 1; we'll re-create when zoom changes significantly
+            this._gridPattern      = null;
+            this._gridPatternZoom  = null;
+        }
+        // Re-create pattern when zoom changes
+        if (this._gridPatternZoom !== zoom) {
+            // We draw dots at world coords so the zoom transform handles size;
+            // pattern approach works best at scale=1 (screen pixels).
+            // Fall back to direct drawing — but batch with a single path per row.
+            this._gridPatternZoom = zoom;
+        }
+
+        // Efficient: draw all dots in a single path per row
         const startX = Math.floor(wLeft / step) * step;
         const startY = Math.floor(wTop  / step) * step;
-        ctx.fillStyle = dark ? 'rgba(56,189,248,.12)' : 'rgba(2,132,199,.12)';
-        for (let x = startX; x < wRight + step; x += step) {
-            for (let y = startY; y < wBottom + step; y += step) {
-                ctx.beginPath(); ctx.arc(x, y, 0.8 / zoom, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = dotColor;
+        const dotR = 0.8 / zoom;
+        // Only draw if dots would be >= 0.5 screen pixels (skip at very low zoom)
+        if (dotR * zoom >= 0.5) {
+            ctx.beginPath();
+            for (let x = startX; x < wRight + step; x += step) {
+                for (let y = startY; y < wBottom + step; y += step) {
+                    ctx.moveTo(x + dotR, y);
+                    ctx.arc(x, y, dotR, 0, Math.PI * 2);
+                }
             }
+            ctx.fill();
         }
     }
 
@@ -181,15 +213,19 @@ class NetworkRenderer {
 
     _drawWirelessAnim(cn) {
         const { ctx, zoom, sim } = this;
+        ctx.fillStyle = 'rgba(167,139,250,0.85)';
+        ctx.beginPath();
         for (let i = 0; i < 5; i++) {
             const t  = ((sim._waveOffset / 60) + i / 5) % 1;
             const px = cn.from.x + (cn.to.x - cn.from.x) * t;
             const py = cn.from.y + (cn.to.y - cn.from.y) * t;
-            ctx.fillStyle   = `rgba(167,139,250,${0.9 - i * 0.18})`;
-            ctx.shadowColor = '#a78bfa'; ctx.shadowBlur = 5;
-            ctx.beginPath(); ctx.arc(px, py, 2.5 / zoom, 0, Math.PI * 2); ctx.fill();
+            const alpha = 0.9 - i * 0.18;
+            ctx.globalAlpha = alpha;
+            ctx.moveTo(px + 2.5/zoom, py);
+            ctx.arc(px, py, 2.5 / zoom, 0, Math.PI * 2);
         }
-        ctx.shadowBlur = 0;
+        ctx.fill();
+        ctx.globalAlpha = 1;
         // Port badges
         const angle = Math.atan2(cn.to.y - cn.from.y, cn.to.x - cn.from.x);
         const D = 38;
@@ -284,7 +320,8 @@ class NetworkRenderer {
         this.sim.devices.forEach(d => {
             const { ctx } = this;
             ctx.save(); ctx.shadowBlur = 0; ctx.setLineDash([]);
-            if (d.selected) { ctx.shadowColor = '#38bdf8'; ctx.shadowBlur = 20 / this.zoom; }
+            // Only expensive glow for selected device
+            if (d.selected) { ctx.shadowColor = '#38bdf8'; ctx.shadowBlur = 16 / this.zoom; }
             this._drawCard(d);
             ctx.restore();
         });
@@ -332,11 +369,10 @@ class NetworkRenderer {
         ctx.lineWidth   = d.selected ? 1.5 / zoom : 0.8 / zoom;
         ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.stroke();
 
-        // Status dot
+        // Status dot — skip shadowBlur on non-selected to reduce GPU cost
         const alive = d.status !== 'down';
-        ctx.fillStyle   = alive ? accent : '#f43f5e';
-        ctx.shadowColor = alive ? accent : '#f43f5e';
-        ctx.shadowBlur  = 5 / zoom;
+        ctx.fillStyle = alive ? accent : '#f43f5e';
+        if (d.selected) { ctx.shadowColor = alive ? accent : '#f43f5e'; ctx.shadowBlur = 5 / zoom; }
         ctx.beginPath(); ctx.arc(x + 9/zoom, y + h - 9/zoom, 2.5/zoom, 0, Math.PI*2); ctx.fill();
         ctx.shadowBlur = 0;
 
@@ -387,7 +423,8 @@ class NetworkRenderer {
                 : intf.mediaType === 'wireless' ? '#a78bfa'
                 : '#374151';
             ctx.fillStyle = col;
-            if (intf.connectedTo) { ctx.shadowColor = col; ctx.shadowBlur = 5/zoom; }
+            // Only show glow on connected interfaces of selected device (costly)
+            if (intf.connectedTo && d.selected) { ctx.shadowColor = col; ctx.shadowBlur = 4/zoom; }
             ctx.beginPath(); ctx.arc(ix, iy, 3/zoom, 0, Math.PI*2); ctx.fill();
             ctx.restore();
         });

@@ -9,6 +9,16 @@ document.addEventListener('DOMContentLoaded', () => {
     window.networkConsole = netConsole;
     const $ = id => document.getElementById(id);
 
+    // ── PacketAnimator — animación visual de paquetes ─────────────────
+    if (typeof window._paInit === 'function') {
+        window._paInit(simulator);
+    }
+
+    // ── ARPVisualizer — proceso ARP educativo ─────────────────────────
+    if (typeof window._arpVizInit === 'function') {
+        window._arpVizInit(simulator);
+    }
+
     // ── Autocargar topología guardada ────────────────────────────────
     try {
         const loaded = loadNetwork(simulator);
@@ -762,6 +772,7 @@ document.addEventListener('DOMContentLoaded', () => {
             updatePanel(dev);
             updateInterfacesTab(dev);
             updateStatsTab(dev);
+            if (window.arpVisualizer) window.arpVisualizer.updateARPTab(dev);
         } else {
             if (simulator.selectedDevice) simulator.selectedDevice.selected = false;
             simulator.selectedDevice = null;
