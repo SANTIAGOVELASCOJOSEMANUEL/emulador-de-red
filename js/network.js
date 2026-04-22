@@ -1348,7 +1348,27 @@ class NetworkSimulator {
     // ── GEOMETRÍA ─────────────────────────────────
     cardW(d) { return { Internet: 90, ISP: 80, Router: 88, RouterWifi: 80, Switch: 88, SwitchPoE: 88, Firewall: 80, AC: 80, ONT: 72, AP: 68, Bridge: 68, Camera: 64, PC: 64, Laptop: 64, Phone: 56, Printer: 64, SDWAN: 96, OLT: 80, DVR: 80, IPPhone: 72, ControlTerminal: 88, PayTerminal: 72, Alarm: 72, Server: 88 }[d.type] || 72; }
     cardH() { return 76; }
-    _iPos(device, idx, total) { const w = this.cardW(device), h = this.cardH(); const x0 = device.x - w / 2, y0 = device.y - h / 2; const spacing = w / (total + 1); return { x: x0 + spacing * (idx + 1), y: y0 + h + 5 }; }
+    _iPos(device, idx, total) {
+        // Modo flotante: si el renderer tiene un icono cargado para este tipo,
+        // los puntos se ubican debajo del bloque icono+texto, igual que en _drawFloatingIcon.
+        if (this.renderer?._iconCache?.[device.type] &&
+            this.renderer._iconCache[device.type] !== 'loading') {
+            const iconSize  = 38;                     // px mundo (sin dividir zoom, _iPos trabaja en coords mundo)
+            const nameBlockH = 23;                    // nombre + IP en coords mundo
+            const baseY = device.y + iconSize + nameBlockH + 9;
+            const n = total;
+            const dotsSpan = Math.min(n * 10, 50);
+            const ix = n === 1
+                ? device.x
+                : device.x - dotsSpan / 2 + (dotsSpan / (n - 1)) * idx;
+            return { x: ix, y: baseY };
+        }
+        // Modo card clásico
+        const w = this.cardW(device), h = this.cardH();
+        const x0 = device.x - w / 2, y0 = device.y - h / 2;
+        const spacing = w / (total + 1);
+        return { x: x0 + spacing * (idx + 1), y: y0 + h + 5 };
+    }
     findDeviceAt(wx, wy) { for (let i = this.devices.length - 1; i >= 0; i--) { const d = this.devices[i]; const w = this.cardW(d) / 2 + 8, h = this.cardH() / 2 + 8; if (wx >= d.x - w && wx <= d.x + w && wy >= d.y - h && wy <= d.y + h) return d; } return null; }
     findInterfaceAt(device, wx, wy) {
         if (!device) return null;
