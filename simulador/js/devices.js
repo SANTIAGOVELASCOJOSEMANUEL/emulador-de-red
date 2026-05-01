@@ -193,26 +193,12 @@ class Router extends NetworkDevice {
         super(id,name,'Router',x,y);
         this.lanPorts=lanPorts;this.wanPorts=wanPorts;this.loadBalancing=false;this.backupMode=false;this.isps=[];
         this.bandwidth={total:0,used:0,isps:[]};this.dhcpServer=null;this.routingTable=[];this.vlanConfig={};
-        // Mesh / WiFi capabilities
-        this.ssid=`WiFi-${name}`;this.band='2.4/5GHz';this.security='WPA3';this.wirelessEnabled=true;
-        this.operationMode='router'; // 'router' or 'ap'
-        this.meshEnabled=false;this.meshId=`Mesh-${name}`;this.meshRole='root'; // 'root' or 'node'
-        this.connectedClients=[];
         this.addInterface('WAN0','WAN','10Gbps','fibra');
         for(let i=1;i<wanPorts;i++)this.addInterface(`WAN${i}`,'WAN','1Gbps','cobre');
         for(let i=0;i<2;i++)this.addInterface(`LAN${i}`,'LAN','10Gbps','fibra');
         for(let i=2;i<lanPorts;i++)this.addInterface(`LAN${i}`,'LAN','1Gbps','cobre');
-        this.addInterface('WLAN0','LAN','300Mbps','wireless');
-        this.addInterface('WLAN-MESH','LAN','867Mbps','wireless'); // backhaul mesh
         this._defaultCfg();
     }
-    setOperationMode(mode){
-        this.operationMode=mode;
-        if(mode==='ap'){this.dhcpServer=null;}
-        else{this._defaultCfg();}
-    }
-    enableMesh(meshId,role='node'){this.meshEnabled=true;this.meshId=meshId;this.meshRole=role;}
-    disableMesh(){this.meshEnabled=false;this.meshRole='root';}
     _defaultCfg(){
         this.defaultGateway='192.168.1.254';
         for(let i=0;i<this.lanPorts;i++){
@@ -329,7 +315,7 @@ class AccessPoint extends NetworkDevice {
         for(const d of allDevices){
             if(d===this) continue;
             if(!d.meshEnabled) continue;
-            if(!['AP','RouterWifi','Router'].includes(d.type)) continue;
+            if(!['AP','RouterWifi'].includes(d.type)) continue;
             if(d.meshId !== this.meshId) continue; // misma red mesh
             const dx=d.x-this.x, dy=d.y-this.y;
             const dist=Math.sqrt(dx*dx+dy*dy);

@@ -268,10 +268,10 @@ class ARPVisualizer {
         });
 
         // Botón en barra lateral avanzada
-        const sidebar = document.getElementById('advSidebar');
+        const sidebar = document.getElementById('toolsRail');
         if (sidebar && !document.getElementById('openARPBtn')) {
             const btn = document.createElement('button');
-            btn.className = 'adv-btn';
+            btn.className = 'rail-btn';
             btn.id        = 'openARPBtn';
             btn.title     = 'Visualizador ARP';
             btn.innerHTML = `<svg viewBox="0 0 20 20"><path d="M3 10h14M10 3v14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="3 2"/></svg><span>ARP</span>`;

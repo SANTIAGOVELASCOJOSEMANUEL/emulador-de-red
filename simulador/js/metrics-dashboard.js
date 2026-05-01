@@ -1,6 +1,6 @@
 // metrics-dashboard.js v1.0
 // Dashboard de métricas en tiempo real: throughput, latencia y paquetes perdidos por enlace.
-// Se integra como panel nativo del emulador, activado desde el botón "Tráfico" del adv-sidebar.
+// Se integra como panel nativo del emulador, activado desde el botón "Tráfico" del tools-rail.
 'use strict';
 
 class MetricsDashboard {

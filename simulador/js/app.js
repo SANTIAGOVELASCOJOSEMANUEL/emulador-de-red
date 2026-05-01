@@ -43,6 +43,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateCounts();
                 simulator.fitAll();
                 netConsole.writeToConsole('📂 Topología restaurada automáticamente');
+                // Propagar SSID del AC a todos los APs ya conectados
+                simulator.devices.forEach(d => {
+                    if (d.type === 'AC' && d.propagateSSID) d.propagateSSID(simulator.connections||[]);
+                });
             }, 300);
         }
     } catch(e) { console.warn('AutoLoad falló:', e); }
@@ -416,9 +420,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ── Advanced feature toolbar buttons ─────────────────────────────
     function toggleAdvBtn(id) {
-        document.querySelectorAll('.adv-btn').forEach(b => b.classList.remove('adv-active'));
-        const btn = $(id); if (btn) btn.classList.add('adv-active');
-        setTimeout(() => btn?.classList.remove('adv-active'), 300);
+        document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('rail-on'));
+        const btn = $(id); if (btn) btn.classList.add('rail-on');
+        setTimeout(() => btn?.classList.remove('rail-on'), 300);
     }
 
     $('openCLIBtn')?.addEventListener('click', () => {
@@ -451,7 +455,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const origConnect = simulator.connectDevices.bind(simulator);
         simulator.connectDevices = function(d1, d2, i1, i2, ls) {
             const r = origConnect(d1, d2, i1, i2, ls);
-            if (r.success) window.eventLog?.add(`🔗 Enlace creado: ${d1?.name} ↔ ${d2?.name}`, '•', 'ok');
+            if (r.success) {
+                window.eventLog?.add(`🔗 Enlace creado: ${d1?.name} ↔ ${d2?.name}`, '•', 'ok');
+                // Propagar SSID del AC a cualquier AP que se acabe de conectar
+                if (d1?.type === 'AC' && d2?.type === 'AP') d1.propagateSSID(simulator.connections||[]);
+                if (d2?.type === 'AC' && d1?.type === 'AP') d2.propagateSSID(simulator.connections||[]);
+            }
             return r;
         };
 
@@ -532,10 +541,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // TrafficGenerator — generador de tráfico automático
         if (typeof TrafficGenerator !== 'undefined' && !window.trafficGenerator) {
             window.trafficGenerator = new TrafficGenerator(sim);
-            const advSidebar = document.getElementById('advSidebar');
-            if (advSidebar && !document.getElementById('openTrafficGenBtn')) {
+            const toolsRail = document.getElementById('toolsRail');
+            if (toolsRail && !document.getElementById('openTrafficGenBtn')) {
                 const tgBtn = document.createElement('button');
-                tgBtn.className = 'adv-btn';
+                tgBtn.className = 'rail-btn';
                 tgBtn.id = 'openTrafficGenBtn';
                 tgBtn.title = 'Generador de Tráfico';
                 tgBtn.innerHTML = `
@@ -545,7 +554,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </svg>
                     <span>Gen.</span>
                 `;
-                advSidebar.appendChild(tgBtn);
+                toolsRail.appendChild(tgBtn);
                 tgBtn.addEventListener('click', () => {
                     window.trafficGenerator.toggle();
                     tgBtn.classList.toggle('active', document.getElementById('tgPanel')?.style.display === 'flex');
@@ -562,6 +571,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (result?.success && window.eventLog) {
                 const [d1,,d2] = args;
                 window.eventLog.add(`Cable: ${d1?.name}↔${d2?.name} conectados`);
+            }
+            // Propagar SSID del AC si se conecta un AP
+            if (result?.success) {
+                const [d1,,d2] = args;
+                if (d1?.type === 'AC' && d2?.type === 'AP') d1.propagateSSID(simulator.connections||[]);
+                if (d2?.type === 'AC' && d1?.type === 'AP') d2.propagateSSID(simulator.connections||[]);
             }
             return result;
         };

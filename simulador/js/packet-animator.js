@@ -664,17 +664,17 @@ window._paInit = function(sim) {
     window.packetAnimator = new PacketAnimator(sim);
 
     // Botón en la barra avanzada (si no existe ya)
-    const advSidebar = document.getElementById('advSidebar');
-    if (advSidebar && !document.getElementById('openPABtn')) {
+    const toolsRail = document.getElementById('toolsRail');
+    if (toolsRail && !document.getElementById('openPABtn')) {
         const btn = document.createElement('button');
-        btn.className = 'adv-btn';
+        btn.className = 'rail-btn';
         btn.id        = 'openPABtn';
         btn.title     = 'Monitor de Paquetes';
         btn.innerHTML = `<svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="3" fill="currentColor"/><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"/><path d="M10 3v2M10 15v2M3 10h2M15 10h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><span>Pkts</span>`;
         btn.addEventListener('click', () => window.packetAnimator.toggle());
         // Insertar antes del botón CLI
         const cliBtn = document.getElementById('openCLIBtn');
-        advSidebar.insertBefore(btn, cliBtn);
+        toolsRail.insertBefore(btn, cliBtn);
     }
 
     console.log('[PacketAnimator] ✅ Inicializado');

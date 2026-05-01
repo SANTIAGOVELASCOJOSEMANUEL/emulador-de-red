@@ -845,10 +845,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // Generador de tráfico automático — solo si app.js no lo inició ya
         if (typeof TrafficGenerator !== 'undefined' && !window.trafficGenerator) {
             window.trafficGenerator = new TrafficGenerator(sim);
-            const advSidebar = document.getElementById('advSidebar');
-            if (advSidebar && !document.getElementById('openTrafficGenBtn')) {
+            const toolsRail = document.getElementById('toolsRail');
+            if (toolsRail && !document.getElementById('openTrafficGenBtn')) {
                 const tgBtn = document.createElement('button');
-                tgBtn.className = 'adv-btn';
+                tgBtn.className = 'rail-btn';
                 tgBtn.id = 'openTrafficGenBtn';
                 tgBtn.title = 'Generador de Tráfico';
                 tgBtn.innerHTML = `
@@ -858,7 +858,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </svg>
                     <span>Gen.</span>
                 `;
-                advSidebar.appendChild(tgBtn);
+                toolsRail.appendChild(tgBtn);
                 tgBtn.addEventListener('click', () => {
                     window.trafficGenerator.toggle();
                     tgBtn.classList.toggle('active', document.getElementById('tgPanel')?.style.display === 'flex');

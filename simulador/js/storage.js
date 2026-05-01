@@ -91,6 +91,12 @@ const NetworkPersistence = {
                 } catch(e) {}
             }
             if (d.inheritedVlan !== undefined) obj.inheritedVlan = d.inheritedVlan ? { ...d.inheritedVlan } : null;
+            // Guardar pool DHCP y sus leases activos
+            if (d.dhcpServer !== undefined && d.dhcpServer !== null) {
+                try {
+                    obj.dhcpServer = JSON.parse(JSON.stringify(d.dhcpServer));
+                } catch(e) {}
+            }
             if (d.loadBalancing !== undefined) obj.loadBalancing = d.loadBalancing;
             if (d.backupMode    !== undefined) obj.backupMode    = d.backupMode;
             if (d.extension  !== undefined) obj.extension  = d.extension;
@@ -264,6 +270,30 @@ const NetworkPersistence = {
 
         // Restaurar anotaciones
         sim.annotations = (data.annotations || []).map(a => ({ ...a }));
+
+        // ── Restaurar leases DHCP ───────────────────────────────────────
+        // Re-inyectar pools guardados y reconstruir la tabla global del engine
+        sim.devices.forEach(dev => {
+            const sd = data.devices.find(x => x.id === dev.id);
+            if (!sd || !sd.dhcpServer) return;
+            // Restaurar el pool completo (incluyendo leases) al dispositivo
+            try {
+                dev.dhcpServer = JSON.parse(JSON.stringify(sd.dhcpServer));
+            } catch(e) {}
+        });
+        // Reconstruir dhcpEngine.leases global desde los ipConfig restaurados
+        // Esto evita que _assignIP() reasigne IPs ya ocupadas
+        setTimeout(() => {
+            if (!window.dhcpEngine) return;
+            // Limpiar tabla global y reconstruir desde los dispositivos
+            window.dhcpEngine.leases = {};
+            sim.devices.forEach(dev => {
+                const ip = dev.ipConfig?.ipAddress;
+                if (ip && ip !== '0.0.0.0' && dev.ipConfig?.dhcpEnabled) {
+                    window.dhcpEngine.leases[dev.id] = ip;
+                }
+            });
+        }, 700); // después de que dhcpEngine ya esté inicializado
 
         sim.draw();
     },

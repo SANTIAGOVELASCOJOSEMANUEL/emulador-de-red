@@ -1768,10 +1768,10 @@ class LabGuide {
         });
 
         // Botón en sidebar
-        const sidebar = document.getElementById('advSidebar');
+        const sidebar = document.getElementById('toolsRail');
         if (sidebar && !document.getElementById('openLabBtn')) {
             const btn = document.createElement('button');
-            btn.className = 'adv-btn';
+            btn.className = 'rail-btn';
             btn.id        = 'openLabBtn';
             btn.title     = 'Laboratorio Guiado';
             btn.innerHTML = `<svg viewBox="0 0 20 20"><path d="M7 2h6v8l2 4H5l2-4V2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M7 10h6M9 2v2M11 2v2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg><span>Lab</span>`;

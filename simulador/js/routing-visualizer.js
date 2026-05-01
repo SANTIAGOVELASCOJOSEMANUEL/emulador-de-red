@@ -368,10 +368,10 @@ class RoutingVisualizer {
         });
 
         // Botón en barra lateral avanzada
-        const sidebar = document.getElementById('advSidebar');
+        const sidebar = document.getElementById('toolsRail');
         if (sidebar && !document.getElementById('openRVBtn')) {
             const btn = document.createElement('button');
-            btn.className = 'adv-btn';
+            btn.className = 'rail-btn';
             btn.id        = 'openRVBtn';
             btn.title     = 'Routing Dinámico';
             btn.innerHTML = `<svg viewBox="0 0 20 20"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="7" cy="5"  r="2" fill="currentColor"/><circle cx="13" cy="10" r="2" fill="currentColor"/><circle cx="7"  cy="15" r="2" fill="currentColor"/></svg><span>Rutas</span>`;
