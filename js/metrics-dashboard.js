@@ -376,19 +376,24 @@ class MetricsDashboard {
 
             upLinks++;
 
-            // Tráfico de fondo + paquetes reales
-            if (this._baseLoad[key] === undefined) this._baseLoad[key] = Math.random() * 0.25 + 0.02;
-            this._baseLoad[key] = Math.min(0.8, Math.max(0.01, this._baseLoad[key] + (Math.random() - 0.5) * 0.04));
-
+            // Tráfico real: paquetes en vuelo sobre este enlace
             const pktsInFlight = (sim.packets || []).filter(p => {
                 if (!p.ruta?.length) return false;
                 const idx = p.ruta.indexOf(conn.from?.id);
                 return idx >= 0 && p.ruta[idx + 1] === conn.to?.id;
             }).length;
 
-            const bgBW   = ls.bandwidth * this._baseLoad[key];
+            // Bytes reales acumulados en LinkState.txBytes (se actualiza en enqueue)
+            if (!this._prevTx) this._prevTx = {};
+            const txKey   = key + '_tx';
+            const nowTx   = ls.txBytes || 0;
+            const deltaTx = Math.max(0, nowTx - (this._prevTx[txKey] || 0));
+            this._prevTx[txKey] = nowTx;
+
+            // BW usado: bytes transferidos en el intervalo (~2 s) + paquetes en vuelo
             const pktBW  = pktsInFlight * Math.min(ls.bandwidth * 0.25, 40);
-            const usedBw = parseFloat(Math.min(ls.bandwidth, bgBW + pktBW).toFixed(1));
+            const txBW   = (deltaTx * 8) / (1000 * 2);  // bytes → kbps (intervalo 2 s)
+            const usedBw = parseFloat(Math.min(ls.bandwidth, pktBW + txBW).toFixed(1));
             const bwPct  = Math.round((usedBw / ls.bandwidth) * 100);
 
             // Latencia efectiva (incluye congestión de la cola actual)

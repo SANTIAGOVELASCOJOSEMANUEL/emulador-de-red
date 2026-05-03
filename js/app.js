@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const netConsole = new NetworkConsole(simulator);
     window.networkConsole = netConsole;
     window.simulator = simulator; // exponer para acceso global (mesh autoconect, etc.)
+    window.networkSim = simulator;  // alias requerido por dhcp-visualizer y nat-visualizer
     const $ = id => document.getElementById(id);
 
     // ── PacketAnimator — animación visual de paquetes ─────────────────
@@ -34,6 +35,33 @@ document.addEventListener('DOMContentLoaded', () => {
     if (typeof window._checkerInit === 'function' && window.labGuide) {
         window._checkerInit(window.labGuide, simulator);
     }
+
+    // -- BGP
+    if (typeof window._bgpInit === 'function') { window._bgpInit(simulator); }
+
+    // -- STP
+    if (typeof window._stpInit === 'function') { window._stpInit(simulator); }
+
+    // -- MPLS
+    if (typeof window._mplsInit === 'function') { window._mplsInit(simulator); }
+
+    // -- VPN
+    if (typeof window._vpnInit === 'function') { window._vpnInit(simulator); }
+
+    // -- QoS
+    if (typeof window._qosInit === 'function') { window._qosInit(simulator); }
+
+    // -- IPConfigPanel
+    if (typeof window._ipConfigPanelInit === 'function') { window._ipConfigPanelInit(simulator); }
+
+    // -- DeviceSearch
+    if (typeof window._deviceSearchInit === 'function') { window._deviceSearchInit(simulator); }
+
+    // -- EnhancedExporter
+    if (typeof window._enhancedExportInit === 'function') { window._enhancedExportInit(simulator); }
+
+    // -- ProjectManager
+    if (typeof window._projectManagerInit === 'function') { window._projectManagerInit(simulator); }
 
     // ── Autocargar topología guardada ────────────────────────────────
     try {
@@ -436,6 +464,46 @@ document.addEventListener('DOMContentLoaded', () => {
     $('openFaultBtn')?.addEventListener('click',   () => { toggleAdvBtn('openFaultBtn');   window.faultSimulator?.toggle(); });
     $('openEventLogBtn')?.addEventListener('click',() => { toggleAdvBtn('openEventLogBtn');window.eventLog?.toggle(); });
 
+    // Botones rail: modulos avanzados de red
+    $('openBGPBtn')?.addEventListener('click',  () => { toggleAdvBtn('openBGPBtn');  window.bgpManager?.show(); });
+    $('openSTPBtn')?.addEventListener('click',  () => { toggleAdvBtn('openSTPBtn');  window.stpManager?.show(); });
+    $('openMPLSBtn')?.addEventListener('click', () => { toggleAdvBtn('openMPLSBtn'); window.mplsManager?.show(); });
+    $('openVPNBtn')?.addEventListener('click',  () => { toggleAdvBtn('openVPNBtn');  window.vpnManager?.show(); });
+    $('openQoSBtn')?.addEventListener('click',  () => { toggleAdvBtn('openQoSBtn');  window.qosManager?.show(); });
+    $('openDHCPVizBtn')?.addEventListener('click', () => { toggleAdvBtn('openDHCPVizBtn'); window.dhcpViz?.show(); });
+    $('openNATVizBtn')?.addEventListener('click',  () => { toggleAdvBtn('openNATVizBtn');  window.natViz?.show(); });
+    $('openLifecycleBtn')?.addEventListener('click',() => { toggleAdvBtn('openLifecycleBtn'); window.packetLifecycleViz?.show(); });
+
+    // Herramientas de búsqueda y configuración IP
+    $('openDeviceSearchBtn')?.addEventListener('click', () => {
+        toggleAdvBtn('openDeviceSearchBtn');
+        window.deviceSearch?.openSearch?.();
+    });
+    $('openIPConfigBtn')?.addEventListener('click', () => {
+        toggleAdvBtn('openIPConfigBtn');
+        const sel = window.simulator?.selectedDevice;
+        if (!sel) {
+            window.networkConsole?.writeToConsole('⚠️ Selecciona un dispositivo primero para abrir IP Config');
+            return;
+        }
+        // Normalizar interfaz: el panel espera intf.ip y intf.mask
+        const rawIntf = sel.interfaces?.[0];
+        const intf = {
+            name: rawIntf?.name ?? 'eth0',
+            ip:   rawIntf?.ip ?? rawIntf?.ipConfig?.ipAddress ?? sel.ipConfig?.ipAddress ?? '',
+            mask: rawIntf?.mask ?? rawIntf?.ipConfig?.subnetMask ?? sel.ipConfig?.subnetMask ?? '255.255.255.0',
+            ...(rawIntf ?? {}),
+        };
+        // Intentar panel mejorado primero, luego showIPConfig genérico
+        if (window.ipConfigPanel?.showEnhancedIPPanel) {
+            window.ipConfigPanel.showEnhancedIPPanel(sel, intf);
+        } else if (window.showIPConfig) {
+            window.showIPConfig(sel, intf);
+        } else {
+            window.networkConsole?.writeToConsole('⚠️ IP Config panel no disponible');
+        }
+    });
+
     $('openDiagBtn')?.addEventListener('click', () => {
         toggleAdvBtn('openDiagBtn');
         netConsole.cmdDiagnose?.();
@@ -592,8 +660,13 @@ document.addEventListener('DOMContentLoaded', () => {
     $('loadNet')?.addEventListener('click',   () => { if (simulator.load()) { updateCounts(); simulator.fitAll(); netConsole.writeToConsole('📂 Red cargada'); _snapshot(); } });
     $('exportNet')?.addEventListener('click', () => simulator.download());
     $('exportPNG')?.addEventListener('click', () => {
-        simulator.exportToPNG();
-        netConsole.writeToConsole('🖼️ Topología exportada como PNG');
+        // Si EnhancedExporter esta disponible, usar su modal anotado
+        if (window.enhancedExporter) {
+            window.enhancedExporter.showExportModal();
+        } else {
+            simulator.exportToPNG();
+            netConsole.writeToConsole('🖼️ Topología exportada como PNG');
+        }
     });
     $('importFile')?.addEventListener('change', async e => {
         const file = e.target.files[0]; if (!file) return;
@@ -1066,17 +1139,57 @@ document.addEventListener('DOMContentLoaded', () => {
     // ── Stats tab ─────────────────────────────────────
     function updateStatsTab(device) {
         const el = $('deviceStats'); if (!el) return;
+
+        const total    = device._totalPackets   || 0;
+        const dropped  = device._droppedPackets || 0;
+        const dropRate = total > 0 ? ((dropped / total) * 100).toFixed(1) + '%' : '—';
+        const connected = device.interfaces.filter(i => i.connectedTo).length;
+
+        // Throughput por enlace (sumar txBytes de todos los LinkState conectados)
+        let totalTxBytes = 0;
+        (simulator.connections || []).forEach(c => {
+            if ((c.from === device || c.to === device) && c._linkState) {
+                totalTxBytes += c._linkState.txBytes || 0;
+            }
+        });
+        const txStr = totalTxBytes > 1e6
+            ? (totalTxBytes / 1e6).toFixed(1) + ' MB'
+            : totalTxBytes > 1e3
+                ? (totalTxBytes / 1e3).toFixed(1) + ' KB'
+                : totalTxBytes + ' B';
+
+        // BGP info
+        const speaker = device._bgpSpeaker;
+        const bgpRows = speaker ? [
+            ['BGP ASN', speaker.asNumber],
+            ['BGP peers', `${[...speaker.peers.values()].filter(p=>p.state==='Established').length}/${speaker.peers.size} established`],
+        ] : [];
+
+        // QoS info
+        const qosEng = device._qosEngine;
+        const qosRows = qosEng ? [
+            ['QoS políticas', qosEng.policies.length],
+            ['QoS cola', qosEng.queue.totalPending() + ' pkts pending'],
+        ] : [];
+
         const rows = [
             ['Tipo', device.type],
             ['Estado', device.status === 'up' ? '🟢 Activo' : '🔴 Inactivo'],
-            ['ID', device.id],
-            ['Total ifaces', device.interfaces.length],
-            ['Conectadas', device.interfaces.filter(i => i.connectedTo).length],
+            ['Interfaces', `${connected}/${device.interfaces.length} conectadas`],
+            ['Pkts totales', total.toLocaleString()],
+            ['Pkts descartados', dropped > 0 ? `${dropped} (${dropRate})` : '0'],
+            ['Tráfico TX total', txStr],
+            ...bgpRows,
+            ...qosRows,
         ];
-        if (device.ports) rows.push(['Puertos', `${device.getUsedPorts()}/${device.ports}`]);
-        if (device._totalPackets) rows.push(['Pkts procesados', device._totalPackets]);
-        if (device._droppedPackets) rows.push(['Pkts descartados', device._droppedPackets]);
-        el.innerHTML = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 8px;">${rows.map(([k,v])=>`<span style="color:var(--text-dim);font-size:9px;font-family:var(--mono)">${k}</span><span style="color:var(--text-bright);font-size:9px;font-family:var(--mono)">${v}</span>`).join('')}</div>`;
+        if (device.ports) rows.splice(2, 0, ['Puertos', `${device.getUsedPorts()}/${device.ports}`]);
+
+        el.innerHTML = `<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 10px;padding:4px 0">${
+            rows.map(([k,v])=>
+                `<span style="color:var(--text-dim);font-size:9px;font-family:var(--mono);white-space:nowrap">${k}</span>` +
+                `<span style="color:var(--text-bright);font-size:9px;font-family:var(--mono)">${v}</span>`
+            ).join('')
+        }</div>`;
     }
 
     // ── Canvas events ─────────────────────────────────

@@ -77,15 +77,18 @@ class LinkState {
         this.status     = 'up';
         this.txBytes    = 0;
         this.droppedPkts= 0;
+        this._lastSeen  = Date.now();   // para CDP holdtime
     }
 
     isUp() { return this.status === 'up'; }
 
-    enqueue() {
+    enqueue(sizeBytes = 1500) {
         if (!this.isUp()) return { ok: false, delay: 0 };
         if (this.queue >= this.maxQueue) { this.droppedPkts++; return { ok: false, delay: 0 }; }
         if (Math.random() < this.lossRate) { this.droppedPkts++; return { ok: false, delay: 0 }; }
         this.queue++;
+        this.txBytes   += sizeBytes;
+        this._lastSeen  = Date.now();   // refresh CDP holdtime
         const jitter    = (Math.random() - 0.5) * this.latency * 0.4;
         const congDelay = (this.queue / this.maxQueue) * this.latency * 3;
         const delay     = Math.max(0, this.latency + jitter + congDelay);

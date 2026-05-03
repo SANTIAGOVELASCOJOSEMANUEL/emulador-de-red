@@ -152,7 +152,7 @@ class NetworkConsole {
                     const ls = fullRuta.length > 1 ? this.network.engine.getLinkState(fullRuta[0], fullRuta[1]) : null;
                     const base = ls ? ls.latency : 2;
                     const hops = fullRuta.length - 1 || 1;
-                    const time = Math.max(1, Math.round(base * hops + (Math.random() * base)));
+                    const time = Math.max(1, Math.round(base * hops));
                     const newTTL = ttl - hops;
                     this.writeToConsole(`  Respuesta de ${targetIP}: bytes=32 tiempo=${time}ms TTL=${newTTL}`);
                     this.network.sendPacket(this.currentDevice, destDevice, 'ping', 32, { ttl });

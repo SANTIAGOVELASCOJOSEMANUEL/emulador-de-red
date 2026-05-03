@@ -1150,9 +1150,14 @@ class DeviceCLI {
         // Fix #5: CDP real — construir tabla desde interfaces conectadas
         const device  = this.device;
         const net     = window.simulator;
-        const uptime  = () => {
-            const m = Math.floor(Math.random() * 120 + 1);
-            return `${Math.floor(m/60)}h${String(m%60).padStart(2,'0')}m`;
+        // CDP holdtime real: 180s estándar, decrece desde la última actividad del enlace.
+        const holdtime = (intf) => {
+            const ls = net?.engine?.getLinkState?.(device.id, intf.connectedTo?.id);
+            if (ls && typeof ls._lastSeen === 'number') {
+                const elapsed = Math.floor((Date.now() - ls._lastSeen) / 1000);
+                return Math.max(1, 180 - (elapsed % 180));
+            }
+            return 170; // enlace reciente
         };
 
         // Capability map por tipo de dispositivo
@@ -1186,7 +1191,7 @@ class DeviceCLI {
         neighbors.forEach(({ peer, intf, peerIntf, ip }) => {
             const devId   = (ip ? `${peer.name}(${ip})` : peer.name).slice(0, 17).padEnd(18);
             const lintf   = (intf.name || intf.type || 'eth0').padEnd(16);
-            const hold    = String(Math.floor(Math.random() * 120 + 120)).padEnd(10);
+            const hold    = String(holdtime(intf)).padEnd(10);
             const capStr  = cap(peer.type).padEnd(13);
             const plat    = ('NetSim-' + peer.type).slice(0, 13).padEnd(14);
             const portId  = peerIntf ? (peerIntf.name || peerIntf.type || 'eth0') : 'eth0';
@@ -1227,8 +1232,8 @@ class DeviceCLI {
                 const lost = ruta.length===0 || (ls&&!ls.isUp()) || (ls&&Math.random()<ls.lossRate);
                 if (!lost) {
                     ok++;
-                    const base = ls?.latency||2;
-                    const t = Math.max(1, Math.round(base*(ruta.length-1) + Math.random()*base));
+                    const base = ls?.latency || 2;
+                    const t = Math.max(1, Math.round(base * (ruta.length - 1)));
                     times.push(t);
                     this.write(`  !`,'cli-ok');
                     net.sendPacket(src, dest, 'ping', 100, { ttl:64 });
@@ -1263,7 +1268,7 @@ class DeviceCLI {
             setTimeout(()=>{
                 const node = net.devices.find(d=>d.id===nodeId);
                 const ls = net.engine.getLinkState(ruta[idx-1], nodeId);
-                const t  = Math.max(1, Math.round((ls?.latency||2)*idx + Math.random()*3));
+                const t  = Math.max(1, Math.round((ls?.latency||2)*idx));
                 const ip = node?.ipConfig?.ipAddress || '—';
                 this.write(`  ${idx}   ${t} ms   ${ip}   ${node?.name||nodeId}`,'cli-data');
             }, idx*400);
@@ -1664,7 +1669,8 @@ class DeviceCLI {
                 if (net.simulationRunning && net.sendPacket) {
                     try { net.sendPacket(src, dest, 'ping', 32, { ttl: 64, label: 'ICMPv6' }); } catch(e) {}
                 }
-                const rtt = Math.floor(Math.random() * 6 + hopCount * 2);
+                const ls  = route.length > 1 ? net.engine.getLinkState(route[0], route[1]) : null;
+                const rtt = Math.max(1, Math.round((ls?.latency || 2) * hopCount));
                 received++;
                 this.write(`Reply from ${IPv6Utils.compress(targetIPv6)}: bytes=32 time=${rtt}ms Hops=${hopCount}`, 'cli-ok');
             } else {
@@ -1748,9 +1754,11 @@ class DeviceCLI {
                 || hopDev.interfaces?.find(i => i.ipv6Config?.address)?.ipv6Config?.address
                 || hopDev.ipConfig?.ipAddress
                 || '*';
-            const rtt1 = Math.floor(Math.random() * 4 + hop * 2);
-            const rtt2 = rtt1 + Math.floor(Math.random() * 2);
-            const rtt3 = rtt2 + Math.floor(Math.random() * 2);
+            const ls   = route.length > hop ? net.engine.getLinkState(route[hop - 1], route[hop]) : null;
+            const base = Math.max(1, Math.round((ls?.latency || 2) * hop));
+            const rtt1 = base;
+            const rtt2 = base;
+            const rtt3 = base;
             const addrStr = hopIPv6 !== '*' ? ` ${hopDev.name} [${IPv6Utils.compress(hopIPv6)}]` : ` ${hopDev.name}`;
             this.write(`  ${String(hop).padStart(2)}${addrStr}  ${rtt1} ms  ${rtt2} ms  ${rtt3} ms`, 'cli-data');
 
@@ -1834,8 +1842,11 @@ class DeviceCLI {
                 const state  = n.adminShutdown ? 'Idle (Admin)' : (n.state || 'Idle');
                 const pfx    = state === 'Established' ? String(n.prefixesRx || 0) : state;
                 const uptime = n.uptime || 'never';
-                const rcv    = String(Math.floor(Math.random()*200)).padEnd(8);
-                const snt    = String(Math.floor(Math.random()*200)).padEnd(8);
+                // Buscar el BGPPeer real en el BGPSpeaker para obtener contadores reales
+                const speaker = this.device._bgpSpeaker;
+                const peer    = speaker?.peers?.find?.(p => p.remoteIP === n.ip);
+                const rcv     = String(peer ? peer.msgsRecv : (n.msgsRecv || 0)).padEnd(8);
+                const snt     = String(peer ? peer.msgsSent : (n.msgsSent || 0)).padEnd(8);
                 this.write(`${n.ip.padEnd(17)} 4 ${String(n.remoteAs||'?').padEnd(6)} ${rcv}${snt}1       0    0 ${uptime.padEnd(9)} ${pfx}`, 'cli-data');
             });
             this.write(`\nTotal number of neighbors: ${bgp.neighbors.length}`, 'cli-dim');
@@ -2886,17 +2897,83 @@ class CLIPanel {
     }
 
     _autocomplete(input) {
-        const val = input.value.trim().toLowerCase();
+        const raw  = input.value;
+        const val  = raw.trimStart();
         const sess = this._activeSession();
         if (!sess) return;
-        // Simple autocomplete for interface names
-        if (val.startsWith('int ') || val.startsWith('interface ')) {
-            const prefix = val.split(' ').slice(1).join(' ');
-            const matches = sess.device.interfaces
+        const dev  = sess.device;
+        const sim  = window.simulator;
+
+        const parts  = val.split(/\s+/);
+        const cmd    = parts[0].toLowerCase();
+        const arg1   = (parts[1] || '').toLowerCase();
+        const argRaw = parts.slice(1).join(' ');
+
+        // ── Completar nombre de interfaz ──────────────────────────────
+        if (['interface','int','shutdown','no'].includes(cmd) && parts.length >= 2) {
+            const prefix = arg1;
+            const matches = dev.interfaces
                 .filter(i => i.name.toLowerCase().startsWith(prefix))
                 .map(i => i.name);
-            if (matches.length===1) input.value = val.replace(prefix, matches[0]);
-            else if (matches.length>1) this._write('  '+matches.join('  '),'cli-dim');
+            if (matches.length === 1) {
+                input.value = cmd + ' ' + matches[0];
+            } else if (matches.length > 1) {
+                this._write('  ' + matches.join('   '), 'cli-dim');
+            }
+            return;
+        }
+
+        // ── Completar IPs de dispositivos vecinos ─────────────────────
+        if (['ping','traceroute','tracert','ssh','telnet','neighbor'].includes(cmd) && parts.length === 2) {
+            const allIPs = (sim?.devices || [])
+                .filter(d => d !== dev && d.ipConfig?.ipAddress && d.ipConfig.ipAddress !== '0.0.0.0')
+                .map(d => ({ ip: d.ipConfig.ipAddress, name: d.name }));
+            const matches = allIPs.filter(e => e.ip.startsWith(arg1) || e.name.toLowerCase().startsWith(arg1));
+            if (matches.length === 1) {
+                input.value = cmd + ' ' + matches[0].ip;
+            } else if (matches.length > 1) {
+                this._write('  ' + matches.map(e => `${e.ip}(${e.name})`).join('   '), 'cli-dim');
+            }
+            return;
+        }
+
+        // ── Completar comando raíz ─────────────────────────────────────
+        if (parts.length === 1) {
+            const priv = sess.mode === 'privileged' || sess.mode === 'config';
+            const ALL_CMDS = [
+                'enable','disable','exit','logout','end','?',
+                'show','ping','traceroute','tracert','clear',
+                ...(priv ? [
+                    'configure','interface','int','router','ip','no',
+                    'hostname','service','do','write','copy',
+                    'debug','undebug','reload','shutdown',
+                ] : []),
+            ];
+            const matches = ALL_CMDS.filter(c => c.startsWith(cmd));
+            if (matches.length === 1) {
+                input.value = matches[0] + ' ';
+            } else if (matches.length > 1) {
+                this._write('  ' + matches.join('   '), 'cli-dim');
+            }
+            return;
+        }
+
+        // ── Completar sub-comandos de show ────────────────────────────
+        if (cmd === 'show' && parts.length === 2) {
+            const SHOW_SUBS = [
+                'ip route','ip interface','ip bgp','ip ospf','ip nat',
+                'interfaces','running-config','version','cdp neighbors',
+                'mac-address-table','spanning-tree','vlan','arp',
+                'mpls forwarding-table','vpn tunnels','qos policies',
+                'ip bgp summary','ip bgp neighbors',
+            ];
+            const matches = SHOW_SUBS.filter(s => s.startsWith(argRaw.toLowerCase()));
+            if (matches.length === 1) {
+                input.value = 'show ' + matches[0];
+            } else if (matches.length > 1) {
+                this._write('  ' + matches.join('   '), 'cli-dim');
+            }
+            return;
         }
     }
 

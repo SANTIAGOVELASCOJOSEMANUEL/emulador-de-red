@@ -616,12 +616,63 @@ class NetworkSimulator {
             return null;
         }
 
+        // ── MPLS: si hay un LSP activo que cubre este destino, usarlo ─
+        if (!opts._mpls && window.mplsManager) {
+            const destIP = dst.ipConfig?.ipAddress;
+            for (const lsp of window.mplsManager.lsps.values()) {
+                if (lsp.state !== 'UP') continue;
+                // Comprueba si el FEC (destino) coincide con la IP destino
+                const fec = lsp.fec; // puede ser IP o CIDR
+                const fecMatch = fec === destIP || (fec.includes('/') && (() => {
+                    try {
+                        const [net, bits] = fec.split('/');
+                        const mask = ~((1 << (32 - +bits)) - 1) >>> 0;
+                        const ipToInt = ip => ip.split('.').reduce((a, b) => (a << 8) + +b, 0) >>> 0;
+                        return (ipToInt(destIP) & mask) === (ipToInt(net) & mask);
+                    } catch { return false; }
+                })());
+                if (fecMatch && lsp.ingress === src) {
+                    // Construir ruta desde el LSP
+                    const lspHops = [lsp.ingress, ...lsp.path, lsp.egress];
+                    const lspRuta = lspHops.map(d => d.id);
+                    lsp.pktsFwd++;
+                    lsp.bytesFwd += size;
+                    this._log(`🏷️ MPLS fwd LSP '${lsp.id}': ${src.name} → ${dst.name}`);
+                    return this._launchPacket(src, dst, lspRuta, type, ttl, { ...opts, _mpls: lsp.id });
+                }
+            }
+        }
+
+        // ── VPN: si hay un túnel UP entre src y dst, reencaminar ──────
+        if (!opts._vpn && window.vpnManager) {
+            const tun = window.vpnManager.routesThroughVPN(src, dst);
+            if (tun) {
+                const tunHops = [tun.localDevice, tun.remoteDevice];
+                const tunRuta = tunHops.map(d => d.id);
+                tun.bytesSent = (tun.bytesSent || 0) + size;
+                tun.pktsSent  = (tun.pktsSent  || 0) + 1;
+                this._log(`🔒 VPN fwd '${tun.id}': ${src.name} → ${dst.name}`);
+                return this._launchPacket(src, dst, tunRuta, type, ttl, { ...opts, _vpn: tun.id });
+            }
+        }
+
         // Si el next-hop es un router (no el destino final), hacer routing hop-by-hop
         if (actualDst !== finalDst) {
-            // El router reenvía hacia el destino final
+            // Decrement TTL en cada salto de router, como en IP real
+            const newTTL = (ttl ?? 64) - ruta.length + 1;
+            if (newTTL <= 0) {
+                this._log(`⏱️ TTL expirado en ${actualDst.name}: ${src.name} → ${finalDst.name}`);
+                // Animar paquete ICMP "Time Exceeded" de vuelta al origen
+                const backRuta = this.engine.findRoute(actualDst.id, src.id);
+                if (backRuta.length) {
+                    this._launchPacket(actualDst, src, backRuta, 'icmp-ttl', 64, { label: 'TTL Exceeded' });
+                }
+                return null;
+            }
+            // El router reenvía hacia el destino final con TTL decrementado
             const routerRuta = this.engine.findRoute(actualDst.id, finalDst.id);
             const fullRuta   = [...ruta, ...routerRuta.slice(1)];
-            return this._launchPacket(src, finalDst, fullRuta, type, ttl, opts);
+            return this._launchPacket(src, finalDst, fullRuta, type, newTTL, opts);
         }
 
         return this._launchPacket(src, finalDst, ruta, type, ttl, opts);
@@ -629,6 +680,20 @@ class NetworkSimulator {
 
     /** Lanza un paquete animado verificando condiciones de red */
     _launchPacket(src, dst, ruta, type, ttl, opts = {}) {
+        // ── QoS: clasificar y aplicar política antes de encolar ───────
+        const qosEng = src._qosEngine;
+        if (qosEng) {
+            const fakePkt = { type, size: opts.size ?? 1500, dscp: opts.dscp ?? 0 };
+            const verdict = qosEng.processPacket(fakePkt);
+            if (verdict.action === 'drop') {
+                src._droppedPackets = (src._droppedPackets || 0) + 1;
+                this._log(`🚫 QoS DROP (${verdict.dscp?.name || 'BE'}): ${src.name} → ${dst.name}`);
+                return null;
+            }
+            // Propagar DSCP al paquete real que se lanzará
+            opts = { ...opts, dscp: fakePkt.dscp, dscpName: fakePkt.dscpName };
+        }
+
         // Verificar congestión en el dispositivo origen
         if (src._congestionQueue >= src._maxCongestionQueue) {
             src._droppedPackets++;
@@ -640,7 +705,7 @@ class NetworkSimulator {
         if (ruta.length > 1) {
             const ls = this.engine.getLinkState(ruta[0], ruta[1]);
             if (ls) {
-                const { ok, delay } = ls.enqueue();
+                const { ok, delay } = ls.enqueue(size ?? 1500);
                 if (!ok) {
                     src._droppedPackets++;
                     const reason = !ls.isUp() ? 'enlace caído' : 'congestión/pérdida';
@@ -1221,8 +1286,16 @@ class NetworkSimulator {
     }
 
     // ── Log helper ────────────────────────────────
-    _log(msg) {
+    _log(msg, level = 'info') {
         if (window.networkConsole) window.networkConsole.writeToConsole(msg);
+        if (window.eventLog) {
+            // Clasificar nivel por prefijo del mensaje
+            const lvl = msg.startsWith('❌') || msg.startsWith('⛔') || msg.startsWith('🚫') ? 'error'
+                      : msg.startsWith('⚠️') || msg.startsWith('⏱') ? 'warn'
+                      : msg.startsWith('✅') || msg.startsWith('🟢') ? 'ok'
+                      : level;
+            window.eventLog.add(msg, '•', lvl);
+        }
     }
 
     // ── Link state management (expuesto para consola) ──

@@ -551,7 +551,7 @@ class LabChecker {
 
         const checks = LAB_CHECKS[lab.id];
         const result = checks?.[step.id]
-            ? checks[lab.id][step.id](this.sim)
+            ? checks[step.id](this.sim)
             : _defaultCheck(step, this.sim);
 
         this._lastCheck = { labId: lab.id, stepId: step.id, ...result };
@@ -577,10 +577,19 @@ class LabChecker {
         const pct    = Math.round((stepIdx / steps.length) * 100);
         const score  = this._estimateScore();
 
+        // Pre-check los pasos pendientes para mostrar cuántos ya pasan
+        const pendingResults = steps.slice(stepIdx + 1).map(s => {
+            try {
+                return checks?.[s.id] ? checks[s.id](this.sim) : _defaultCheck(s, this.sim);
+            } catch(e) { return { ok: false }; }
+        });
+        const alreadyOk = pendingResults.filter(r => r.ok).length;
+
         el.innerHTML = `
 <div class="lc-status ${result.ok ? 'ok' : 'fail'}">
   <div class="lc-status-label">${result.ok ? '✅ Paso completado' : '⚠️ Falta completar'}</div>
   <div class="lc-status-text">${result.feedback}</div>
+  ${!result.ok && step.hint ? `<div style="margin-top:6px;padding:6px 8px;background:rgba(245,158,11,.08);border-left:2px solid #f59e0b;border-radius:0 4px 4px 0;color:#f59e0b;font-size:9px">💡 ${step.hint}</div>` : ''}
 </div>
 <div class="lc-checklist">
   ${steps.map((s, i) => {

@@ -449,7 +449,7 @@ class Firewall extends NetworkDevice {
 class ONT extends NetworkDevice {
     constructor(id,name,x,y){
         super(id,name,'ONT',x,y);
-        this.model='GPON ONT';this.ponID=Math.floor(Math.random()*65535);
+        this.model='GPON ONT';this.ponID=(()=>{const n=parseInt(id.replace(/\D/g,''))||0;return(n*2654435761)%65536;})();
         this.wirelessEnabled=true;this.ssid='ONT-'+name;this.band='2.4/5GHz';this.security='WPA2';
         this.addInterface('PON-IN','PON','1Gbps','fibra');
         for(let i=0;i<4;i++){this.addInterface(`ETH${i}`,'LAN','1Gbps','cobre');this.interfaces[i+1].ipConfig={ipAddress:'0.0.0.0',subnetMask:'255.255.255.0',gateway:''}}

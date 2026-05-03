@@ -142,18 +142,18 @@ class TrafficMonitor {
                 return idx >= 0 && p.ruta[idx+1] === c.to.id;
             }).length;
 
-            // Simular tráfico de fondo: cada enlace tiene una carga base aleatoria
-            // que evoluciona suavemente (random walk entre 2% y 60% del ancho de banda)
-            if (!this._baseLoad) this._baseLoad = {};
-            if (this._baseLoad[key] === undefined) this._baseLoad[key] = Math.random() * 0.3 + 0.02;
-            // Random walk ±5% por tick
-            this._baseLoad[key] = Math.min(0.75, Math.max(0.01, this._baseLoad[key] + (Math.random()-0.5)*0.05));
+            // Tráfico real: bytes transferidos (txBytes de LinkState) + paquetes en vuelo
+            if (!this._prevTx) this._prevTx = {};
+            const txKey   = key + '_tx';
+            const nowTx   = ls.txBytes || 0;
+            const deltaTx = Math.max(0, nowTx - (this._prevTx[txKey] || 0));
+            this._prevTx[txKey] = nowTx;
 
-            const bgBW   = ls.bandwidth * this._baseLoad[key];
-            const pktBW  = pktsInFlight * Math.min(ls.bandwidth * 0.3, 50);
-            const bw     = Math.min(ls.bandwidth, bgBW + pktBW);
-            const pkt    = pktsInFlight + Math.round(this._baseLoad[key] * ls.bandwidth * 0.1);
-            const drops  = ls.droppedPkts;
+            const pktBW = pktsInFlight * Math.min(ls.bandwidth * 0.3, 50);
+            const txBW  = (deltaTx * 8) / (1000 * 2);  // bytes → kbps (intervalo ~2s)
+            const bw    = parseFloat(Math.min(ls.bandwidth, pktBW + txBW).toFixed(1));
+            const pkt   = pktsInFlight;
+            const drops = ls.droppedPkts;
 
             totalPkts  += pkt;
             totalDrops += drops;
@@ -378,7 +378,8 @@ class FaultSimulator {
             if (ls) { ls.setStatus('down'); }
             sim.engine.setEdgeStatus(conn.from.id, conn.to.id, 'down');
             description = `Cable cortado: ${conn.from.name}↔${conn.to.name}`;
-            this.faults.push({ id:faultId, type, target, description, recover:()=>{ if(ls)ls.setStatus('up'); sim.engine.setEdgeStatus(conn.from.id,conn.to.id,'up'); sim.draw(); }, recoveryAt: recoverySec?Date.now()+recoverySec*1000:0 });
+            if (window.eventLog) window.eventLog.add(`🔌 FAULT: cable cortado ${conn.from.name}↔${conn.to.name}`, '•', 'error');
+            this.faults.push({ id:faultId, type, target, description, recover:()=>{ if(ls)ls.setStatus('up'); sim.engine.setEdgeStatus(conn.from.id,conn.to.id,'up'); if(window.eventLog)window.eventLog.add(`✅ RECOVER: cable ${conn.from.name}↔${conn.to.name} restaurado`,'•','ok'); sim.draw(); }, recoveryAt: recoverySec?Date.now()+recoverySec*1000:0 });
 
         } else if (target.startsWith('port:')) {
             const [,devId,intfName] = target.split(':');
@@ -420,7 +421,8 @@ class FaultSimulator {
                 this.faults.push({ id:faultId, type, target, description, recover:()=>{ dev.status=oldStatus; affectedLinks.forEach(({ls,prev})=>{ls.setStatus(prev);}); sim.connections.filter(c=>c.from===dev||c.to===dev).forEach(c=>sim.engine.setEdgeStatus(c.from.id,c.to.id,'up'));sim.draw(); }, recoveryAt:recoverySec?Date.now()+recoverySec*1000:0 });
             } else {
                 description = `Dispositivo caído: ${dev.name}`;
-                this.faults.push({ id:faultId, type, target, description, recover:()=>{ dev.status=oldStatus; affectedLinks.forEach(({ls,prev})=>{ls.setStatus(prev);}); sim.connections.filter(c=>c.from===dev||c.to===dev).forEach(c=>sim.engine.setEdgeStatus(c.from.id,c.to.id,'up'));sim.draw(); }, recoveryAt:recoverySec?Date.now()+recoverySec*1000:0 });
+                if (window.eventLog) window.eventLog.add(`💀 FAULT: ${dev.name} caído`, '•', 'error');
+                this.faults.push({ id:faultId, type, target, description, recover:()=>{ dev.status=oldStatus; affectedLinks.forEach(({ls,prev})=>{ls.setStatus(prev);}); sim.connections.filter(c=>c.from===dev||c.to===dev).forEach(c=>sim.engine.setEdgeStatus(c.from.id,c.to.id,'up')); if(window.eventLog)window.eventLog.add(`✅ RECOVER: ${dev.name} restaurado`,'•','ok'); sim.draw(); }, recoveryAt:recoverySec?Date.now()+recoverySec*1000:0 });
             }
         }
 

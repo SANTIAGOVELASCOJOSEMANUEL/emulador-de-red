@@ -46,6 +46,10 @@ const NetworkPersistence = {
 
     /** Serializa el estado completo del simulador a un objeto plano */
     _serialize(sim) {
+        // Helper para serializar claves DSCP
+        const DSCP_KEY_MAP = (() => {
+            try { return Object.fromEntries(Object.entries(window.DSCP ?? {}).map(([k,v])=>[k,v])); } catch(e) { return {}; }
+        })();
         const devices = sim.devices.map(d => {
             const obj = {
                 id: d.id, type: d.type, name: d.name, x: d.x, y: d.y,
@@ -114,8 +118,81 @@ const NetworkPersistence = {
                     if (v6entries.length) obj._staticRoutesV6 = v6entries.map(r => ({ ...r }));
                 } catch(e) {}
             }
+            // ── BGP Speaker ──────────────────────────────────────────
+            const sp = d._bgpSpeaker;
+            if (sp) {
+                obj._bgp = {
+                    asn      : sp.asNumber,
+                    networks : [...(sp.networks || [])],
+                    peers    : [...sp.peers.values()].map(p => ({
+                        remoteAS    : p.remoteAS,
+                        remoteIP    : p.remoteIP,
+                        remoteDevId : p.remoteDevice?.id ?? null,
+                        localPref   : p.localPref,
+                    })),
+                };
+            }
+            // ── QoS Engine ───────────────────────────────────────────
+            const qe = d._qosEngine;
+            if (qe) {
+                obj._qos = {
+                    enabled  : qe.enabled,
+                    policies : qe.policies.map(p => ({
+                        name     : p.name,
+                        protocol : p.protocol,
+                        dstPorts : [...(p.dstPorts || [])],
+                        srcIP    : p.srcIP,
+                        dstIP    : p.dstIP,
+                        dscp     : Object.keys(DSCP_KEY_MAP).find(k => DSCP_KEY_MAP[k] === p.dscp) ?? 'BE',
+                        rateKbps : p.rateKbps,
+                        burstKB  : p.burstKB,
+                    })),
+                };
+            }
             return obj;
         });
+
+        // ── MPLS LSPs ─────────────────────────────────────────────────
+        const mplsLSPs = [];
+        if (window.mplsManager) {
+            for (const lsp of window.mplsManager.lsps.values()) {
+                try {
+                    mplsLSPs.push({
+                        id        : lsp.id,
+                        fec       : lsp.fec,
+                        ingressId : lsp.ingress?.id,
+                        egressId  : lsp.egress?.id,
+                        pathIds   : (lsp.path || []).map(d => d.id),
+                        type      : lsp.type,
+                        bandwidth : lsp.bandwidth,
+                    });
+                } catch(e) {}
+            }
+        }
+
+        // ── VPN Tunnels ───────────────────────────────────────────────
+        const vpnTunnels = [];
+        if (window.vpnManager) {
+            for (const t of window.vpnManager.tunnels.values()) {
+                try {
+                    vpnTunnels.push({
+                        id          : t.id,
+                        type        : t.type,
+                        localDevId  : t.localDevice?.id,
+                        remoteDevId : t.remoteDevice?.id,
+                        localIP     : t.localIP,
+                        remoteIP    : t.remoteIP,
+                        localNet    : t.localNet,
+                        remoteNet   : t.remoteNet,
+                        psk         : t.psk,
+                        encAlg      : t.encAlg,
+                        authAlg     : t.authAlg,
+                        dhGroup     : t.dhGroup,
+                        connected   : t.state === 'UP',
+                    });
+                } catch(e) {}
+            }
+        }
 
         const connections = sim.connections.map(c => ({
             fromId: c.from.id, toId: c.to.id,
@@ -140,6 +217,8 @@ const NetworkPersistence = {
             devices,
             connections,
             annotations,
+            mplsLSPs,
+            vpnTunnels,
         };
     },
 
@@ -294,6 +373,91 @@ const NetworkPersistence = {
                 }
             });
         }, 700); // después de que dhcpEngine ya esté inicializado
+
+        // ── Restaurar BGP Speakers ────────────────────────────────────
+        setTimeout(() => {
+            if (!window.bgpManager) return;
+            const devMap2 = new Map(sim.devices.map(d => [d.id, d]));
+            sim.devices.forEach(dev => {
+                const sd = data.devices.find(x => x.id === dev.id);
+                if (!sd?._bgp) return;
+                try {
+                    const sp = window.bgpManager.addSpeaker(dev, sd._bgp.asn);
+                    (sd._bgp.networks || []).forEach(pfx => sp.advertiseNetwork(pfx));
+                    (sd._bgp.peers || []).forEach(p => {
+                        const remDev = devMap2.get(p.remoteDevId);
+                        sp.addNeighbor({
+                            remoteAS    : p.remoteAS,
+                            remoteIP    : p.remoteIP ?? remDev?.ipConfig?.ipAddress ?? '0.0.0.0',
+                            remoteDevice: remDev ?? null,
+                            localPref   : p.localPref ?? 100,
+                        });
+                    });
+                } catch(e) { console.warn('BGP restore err:', e); }
+            });
+            window.bgpManager.startAll();
+        }, 800);
+
+        // ── Restaurar QoS Engines ─────────────────────────────────────
+        setTimeout(() => {
+            if (!window.qosManager) return;
+            sim.devices.forEach(dev => {
+                const sd = data.devices.find(x => x.id === dev.id);
+                if (!sd?._qos?.policies?.length) return;
+                try {
+                    const eng = window.qosManager._getOrCreate(dev);
+                    eng.enabled = sd._qos.enabled ?? true;
+                    sd._qos.policies.forEach(p => eng.addPolicy({ ...p }));
+                } catch(e) { console.warn('QoS restore err:', e); }
+            });
+        }, 400);
+
+        // ── Restaurar MPLS LSPs ───────────────────────────────────────
+        setTimeout(() => {
+            if (!window.mplsManager || !data.mplsLSPs?.length) return;
+            const devMap3 = new Map(sim.devices.map(d => [d.id, d]));
+            data.mplsLSPs.forEach(sl => {
+                try {
+                    const ingress = devMap3.get(sl.ingressId);
+                    const egress  = devMap3.get(sl.egressId);
+                    const path    = (sl.pathIds || []).map(id => devMap3.get(id)).filter(Boolean);
+                    if (!ingress || !egress) return;
+                    window.mplsManager.buildLSP({
+                        id: sl.id, fec: sl.fec,
+                        ingress, egress, path,
+                        type: sl.type, bandwidth: sl.bandwidth,
+                    });
+                } catch(e) { console.warn('MPLS restore err:', e); }
+            });
+        }, 600);
+
+        // ── Restaurar VPN Tunnels ─────────────────────────────────────
+        setTimeout(() => {
+            if (!window.vpnManager || !data.vpnTunnels?.length) return;
+            const devMap4 = new Map(sim.devices.map(d => [d.id, d]));
+            data.vpnTunnels.forEach(st => {
+                try {
+                    const localDev  = devMap4.get(st.localDevId);
+                    const remoteDev = devMap4.get(st.remoteDevId);
+                    if (!localDev || !remoteDev) return;
+                    const t = window.vpnManager.addTunnel({
+                        id          : st.id,
+                        type        : st.type,
+                        localDevice : localDev,
+                        remoteDevice: remoteDev,
+                        localIP     : st.localIP,
+                        remoteIP    : st.remoteIP,
+                        localNet    : st.localNet,
+                        remoteNet   : st.remoteNet,
+                        psk         : st.psk,
+                        encAlg      : st.encAlg,
+                        authAlg     : st.authAlg,
+                        dhGroup     : st.dhGroup,
+                    });
+                    if (st.connected) t.connect();
+                } catch(e) { console.warn('VPN restore err:', e); }
+            });
+        }, 600);
 
         sim.draw();
     },

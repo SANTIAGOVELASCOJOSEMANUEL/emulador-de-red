@@ -1,4 +1,4 @@
-// renderer.js v2.1 — Renderer con throttle 60 FPS + snap-to-grid
+// renderer.js v2.2 — Renderer con throttle 60 FPS + snap-to-grid + STP colors
 'use strict';
 
 // ── UX: Snap-to-grid ────────────────────────────────────────────────
@@ -218,15 +218,10 @@ class NetworkRenderer {
             tc.beginPath(); tc.arc(0, 0, 0.8, 0, Math.PI * 2); tc.fill();
             this._gridTile    = tile;
             this._gridTileKey = cacheKey;
-            // Also create the pattern at scale 1; we'll re-create when zoom changes significantly
             this._gridPattern      = null;
             this._gridPatternZoom  = null;
         }
-        // Re-create pattern when zoom changes
         if (this._gridPatternZoom !== zoom) {
-            // We draw dots at world coords so the zoom transform handles size;
-            // pattern approach works best at scale=1 (screen pixels).
-            // Fall back to direct drawing — but batch with a single path per row.
             this._gridPatternZoom = zoom;
         }
 
@@ -271,11 +266,10 @@ class NetworkRenderer {
         const isFibra = cn.type === 'fibra';
         const isDown  = cn.status === 'down';
         const isPoE   = cn.fromInterface?.type === 'LAN-POE' || cn.toInterface?.type === 'LAN-POE';
-        // Detectar enlace de malla (WLAN-MESH a WLAN-MESH)
         const isMesh  = (cn.fromInterface?.name === 'WLAN-MESH' || cn.toInterface?.name === 'WLAN-MESH');
         ctx.setLineDash([]); ctx.shadowBlur = 0;
+        
         if (isMesh && !isDown) {
-            // Enlace mesh: púrpura punteado con animación especial
             ctx.strokeStyle = 'rgba(168,85,247,0.55)';
             ctx.lineWidth = 2.5 / zoom;
             ctx.setLineDash([8/zoom, 4/zoom]);
@@ -296,7 +290,6 @@ class NetworkRenderer {
             this._drawWirelessAnim(cn);
             ctx.restore(); return;
         } else if (isFibra) {
-            // Fibra: línea sólida naranja/dorado + pulso animado de luz
             ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2.5 / zoom;
             ctx.shadowColor = 'rgba(245,158,11,.5)'; ctx.shadowBlur = 6;
             ctx.beginPath(); ctx.moveTo(cn.from.x, cn.from.y); ctx.lineTo(cn.to.x, cn.to.y); ctx.stroke();
@@ -311,7 +304,6 @@ class NetworkRenderer {
             this._drawCobreAnim(cn, '#4ade80');
             ctx.restore(); return;
         } else {
-            // Cobre: línea azul + pulso de datos animado
             ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2 / zoom;
             ctx.shadowColor = 'rgba(56,189,248,.3)'; ctx.shadowBlur = 4;
             ctx.beginPath(); ctx.moveTo(cn.from.x, cn.from.y); ctx.lineTo(cn.to.x, cn.to.y); ctx.stroke();
@@ -352,19 +344,16 @@ class NetworkRenderer {
         }
         ctx.fill();
         ctx.globalAlpha = 1;
-        // Port badges
         const angle = Math.atan2(cn.to.y - cn.from.y, cn.to.x - cn.from.x);
         const D = 38;
         this._portBadge(cn.from.x + Math.cos(angle)*D, cn.from.y + Math.sin(angle)*D - 14, cn.fromInterface?.name, cn.type);
         this._portBadge(cn.to.x   - Math.cos(angle)*D, cn.to.y   - Math.sin(angle)*D - 14, cn.toInterface?.name,   cn.type);
     }
 
-    // Malla: diamantes morados que viajan bidireccionalmente
     _drawMeshAnim(cn) {
         const { ctx, zoom, sim } = this;
         const t0 = (sim._waveOffset / 45) % 1;
         const colors = ['rgba(168,85,247,0.9)','rgba(192,132,252,0.7)','rgba(216,180,254,0.5)'];
-        // Partículas ida
         for (let i = 0; i < 3; i++) {
             const t = (t0 + i/3) % 1;
             const px = cn.from.x + (cn.to.x - cn.from.x) * t;
@@ -373,7 +362,6 @@ class NetworkRenderer {
             const r = 3/zoom;
             ctx.beginPath(); ctx.moveTo(px, py-r); ctx.lineTo(px+r,py); ctx.lineTo(px,py+r); ctx.lineTo(px-r,py); ctx.closePath(); ctx.fill();
         }
-        // Partículas vuelta (backhaul bidireccional)
         const t1 = (1 - t0) % 1;
         for (let i = 0; i < 2; i++) {
             const t = (t1 + i/2) % 1;
@@ -384,7 +372,6 @@ class NetworkRenderer {
             ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2); ctx.fill();
         }
         ctx.globalAlpha = 1;
-        // Badge MESH en el centro
         const mx = (cn.from.x+cn.to.x)/2, my = (cn.from.y+cn.to.y)/2;
         ctx.fillStyle = 'rgba(168,85,247,.15)'; ctx.strokeStyle = 'rgba(168,85,247,.7)'; ctx.lineWidth = 0.8/zoom;
         ctx.beginPath(); ctx.roundRect(mx-14/zoom, my-8/zoom, 28/zoom, 14/zoom, 3/zoom); ctx.fill(); ctx.stroke();
@@ -396,7 +383,6 @@ class NetworkRenderer {
         this._portBadge(cn.to.x   - Math.cos(angle)*D, cn.to.y   - Math.sin(angle)*D - 14, cn.toInterface?.name,   'mesh');
     }
 
-    // Cobre: pequeños cuadraditos/segmentos que viajan por el cable (estilo señal eléctrica)
     _drawCobreAnim(cn, color) {
         const { ctx, zoom, sim } = this;
         const numPulses = 3;
@@ -406,7 +392,6 @@ class NetworkRenderer {
             const px = cn.from.x + (cn.to.x - cn.from.x) * t;
             const py = cn.from.y + (cn.to.y - cn.from.y) * t;
             const alpha = 0.9 - Math.abs(t - 0.5) * 0.8;
-            // Cuadradito rotado 45° (rombo) — diferente a wireless (círculos) y fibra (flash largo)
             ctx.save();
             ctx.translate(px, py);
             ctx.rotate(Math.PI / 4);
@@ -417,26 +402,23 @@ class NetworkRenderer {
             ctx.restore();
         }
         ctx.shadowBlur = 0;
-        // Port badges
         const angle = Math.atan2(cn.to.y - cn.from.y, cn.to.x - cn.from.x);
         const D = 38;
         this._portBadge(cn.from.x + Math.cos(angle)*D, cn.from.y + Math.sin(angle)*D - 14, cn.fromInterface?.name, cn.type);
         this._portBadge(cn.to.x   - Math.cos(angle)*D, cn.to.y   - Math.sin(angle)*D - 14, cn.toInterface?.name,   cn.type);
     }
 
-    // Fibra: destellos de luz alargados que viajan rápido (fotones)
     _drawFibraAnim(cn) {
         const { ctx, zoom, sim } = this;
         const dx = cn.to.x - cn.from.x, dy = cn.to.y - cn.from.y;
-        const len = Math.hypot(dx, dy);
         const angle = Math.atan2(dy, dx);
         const numPhotons = 2;
         for (let i = 0; i < numPhotons; i++) {
-            const t = ((sim._waveOffset / 40) + i / numPhotons) % 1; // más rápido que cobre/wireless
+            const t = ((sim._waveOffset / 40) + i / numPhotons) % 1;
             const px = cn.from.x + dx * t;
             const py = cn.from.y + dy * t;
             const alpha = Math.sin(t * Math.PI) * 0.95 + 0.05;
-            const trailLen = 18 / zoom; // destello alargado
+            const trailLen = 18 / zoom;
             ctx.save();
             ctx.translate(px, py);
             ctx.rotate(angle);
@@ -450,7 +432,6 @@ class NetworkRenderer {
             ctx.restore();
         }
         ctx.shadowBlur = 0;
-        // Port badges
         const ang = Math.atan2(dy, dx);
         const D = 38;
         this._portBadge(cn.from.x + Math.cos(ang)*D, cn.from.y + Math.sin(ang)*D - 14, cn.fromInterface?.name, cn.type);
@@ -483,7 +464,6 @@ class NetworkRenderer {
         this.sim.devices.forEach(d => {
             const { ctx } = this;
             ctx.save(); ctx.shadowBlur = 0; ctx.setLineDash([]);
-            // Only expensive glow for selected device
             if (d.selected) { ctx.shadowColor = '#38bdf8'; ctx.shadowBlur = 16 / this.zoom; }
             this._drawCard(d);
             ctx.restore();
@@ -506,11 +486,9 @@ class NetworkRenderer {
 
     _drawCard(d) {
         const { ctx, zoom, dark, sim } = this;
+        const accent = this._typeAccent(d.type);
 
         // ── Modo "ícono flotante" ────────────────────────────────────
-        // Si hay imagen personalizada cargada para este tipo, se omite la card
-        // y el ícono se dibuja grande y directo en el canvas, igual que en
-        // herramientas profesionales de diagramas de red (GNS3, NetBox, etc.)
         const cachedImg = this._iconCache[d.type];
         if (cachedImg && cachedImg !== 'loading') {
             this._drawFloatingIcon(d);
@@ -520,7 +498,6 @@ class NetworkRenderer {
         // ── Modo card clásico (fallback geométrico) ──────────────────
         const w  = sim.cardW(d), h = sim.cardH();
         const x  = d.x - w / 2, y = d.y - h / 2;
-        const accent = this._typeAccent(d.type);
         const r = 9 / zoom;
 
         // Shadow
@@ -545,7 +522,7 @@ class NetworkRenderer {
         ctx.lineWidth   = d.selected ? 1.5 / zoom : 0.8 / zoom;
         ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.stroke();
 
-        // Status dot — skip shadowBlur on non-selected to reduce GPU cost
+        // Status dot
         const alive = d.status !== 'down';
         ctx.fillStyle = alive ? accent : '#f43f5e';
         if (d.selected) { ctx.shadowColor = alive ? accent : '#f43f5e'; ctx.shadowBlur = 5 / zoom; }
@@ -572,7 +549,7 @@ class NetworkRenderer {
         // Icon
         this._drawIcon(d, d.x, y + 22/zoom, 22/zoom);
 
-        // Name — tamaño fijo en mundo, escala con zoom naturalmente
+        // Name
         const short = d.name.length > 12 ? d.name.substring(0, 12) : d.name;
         ctx.fillStyle = dark ? '#e2f0ff' : '#0d2340';
         const nameFontSize = Math.max(7, Math.min(12, 10)) / zoom;
@@ -588,18 +565,27 @@ class NetworkRenderer {
             ctx.fillText(d.ipConfig.ipAddress, d.x, y + h - 6/zoom);
         }
 
-        // Interface dots
+        // Interface dots - CON SOPORTE STP
         const n = d.interfaces.length;
         d.interfaces.forEach((intf, i) => {
             const { x: ix, y: iy } = sim._iPos(d, i, n);
             ctx.save(); ctx.shadowBlur = 0;
-            const col = intf.connectedTo
-                ? accent
-                : intf.mediaType === 'fibra'    ? '#f59e0b'
-                : intf.mediaType === 'wireless' ? '#a78bfa'
-                : '#374151';
+            
+            let col;
+            // Verificar STP para switches
+            if (d.stp && d.stp.enabled && d.getPortColor) {
+                col = d.getPortColor(i);
+            } else if (intf.connectedTo) {
+                col = accent;
+            } else if (intf.mediaType === 'fibra') {
+                col = '#f59e0b';
+            } else if (intf.mediaType === 'wireless') {
+                col = '#a78bfa';
+            } else {
+                col = '#374151';
+            }
+            
             ctx.fillStyle = col;
-            // Only show glow on connected interfaces of selected device (costly)
             if (intf.connectedTo && d.selected) { ctx.shadowColor = col; ctx.shadowBlur = 4/zoom; }
             ctx.beginPath(); ctx.arc(ix, iy, 3/zoom, 0, Math.PI*2); ctx.fill();
             ctx.restore();
@@ -609,25 +595,17 @@ class NetworkRenderer {
     // ═══════════════════════════════════════════
     //  FLOATING ICON MODE
     // ═══════════════════════════════════════════
-    /**
-     * Renderiza el dispositivo sin card: solo el ícono PNG/SVG grande,
-     * nombre e IP flotando sobre el canvas. Estilo GNS3 / NetBox.
-     *
-     * Dimensiones equivalentes a la card original para que los cables
-     * y los puntos de interfaz sigan conectando en el lugar correcto.
-     */
     _drawFloatingIcon(d) {
         const { ctx, zoom, dark, sim } = this;
         const img    = this._iconCache[d.type];
         const accent = this._typeAccent(d.type);
         const alive  = d.status !== 'down';
 
-        // Tamaño del ícono flotante — igual de grande que GNS3
         const iconSize = 38 / zoom;
         const cx = d.x;
-        const cy = d.y - 4 / zoom;   // ligeramente arriba para dejar espacio al texto
+        const cy = d.y - 4 / zoom;
 
-        // ── Glow de selección ────────────────────────────────────────
+        // Glow de selección
         if (d.selected) {
             ctx.save();
             ctx.shadowColor = accent;
@@ -640,14 +618,12 @@ class NetworkRenderer {
             ctx.restore();
         }
 
-        // ── Imagen PNG/SVG ───────────────────────────────────────────
+        // Imagen PNG/SVG
         ctx.save();
-        // Sombra suave bajo el ícono para darle profundidad
         ctx.shadowColor  = 'rgba(0,0,0,0.6)';
         ctx.shadowBlur   = 10 / zoom;
         ctx.shadowOffsetY = 3 / zoom;
 
-        // Escalar manteniendo proporción
         const ar = img.naturalWidth / img.naturalHeight;
         let iw = iconSize * 2, ih = iconSize * 2;
         if (ar >= 1) { ih = iw / ar; } else { iw = ih * ar; }
@@ -655,11 +631,10 @@ class NetworkRenderer {
         ctx.drawImage(img, cx - iw / 2, cy - ih / 2, iw, ih);
         ctx.restore();
 
-        // ── Nombre ───────────────────────────────────────────────────
+        // Nombre
         const short = d.name.length > 14 ? d.name.substring(0, 14) : d.name;
         const nameY = cy + ih / 2 + 11 / zoom;
         ctx.save();
-        // Sombra de texto para legibilidad sobre cualquier fondo
         ctx.shadowColor  = dark ? 'rgba(0,0,0,0.9)' : 'rgba(255,255,255,0.9)';
         ctx.shadowBlur   = 4 / zoom;
         ctx.fillStyle    = dark ? '#e2f0ff' : '#0d2340';
@@ -669,7 +644,7 @@ class NetworkRenderer {
         ctx.fillText(short, cx, nameY);
         ctx.restore();
 
-        // ── IP ────────────────────────────────────────────────────────
+        // IP
         if (d.ipConfig?.ipAddress && d.ipConfig.ipAddress !== '0.0.0.0') {
             ctx.save();
             ctx.shadowColor  = dark ? 'rgba(0,0,0,0.9)' : 'rgba(255,255,255,0.9)';
@@ -682,7 +657,7 @@ class NetworkRenderer {
             ctx.restore();
         }
 
-        // ── SSID label (Router en modo AP o con mesh / RouterWifi / AP) ──
+        // SSID label
         if (d.ssid && (d.type === 'Router' || d.type === 'RouterWifi' || d.type === 'AP')) {
             const showSSID = d.wirelessEnabled !== false;
             if (showSSID) {
@@ -695,7 +670,8 @@ class NetworkRenderer {
                 ctx.restore();
             }
         }
-        // ── Badge modo AP ──────────────────────────────────────────────
+        
+        // Badge modo AP
         if ((d.type === 'Router' || d.type === 'RouterWifi') && d.operationMode === 'ap') {
             const badgeY = cy - ih/2 - 10/zoom;
             ctx.save();
@@ -706,7 +682,8 @@ class NetworkRenderer {
             ctx.fillText('AP MODE', cx, badgeY);
             ctx.restore();
         }
-        // ── Badge mesh root/node ────────────────────────────────────────
+        
+        // Badge mesh root/node
         if ((d.type === 'Router' || d.type === 'RouterWifi') && d.meshEnabled) {
             const mBadgeY = cy - ih/2 - (d.operationMode==='ap' ? 24 : 10)/zoom;
             const mColor = d.meshRole === 'root' ? '#a855f7' : '#c084fc';
@@ -720,7 +697,7 @@ class NetworkRenderer {
             ctx.restore();
         }
 
-        // ── Status dot ───────────────────────────────────────────────
+        // Status dot
         ctx.save();
         ctx.fillStyle = alive ? accent : '#f43f5e';
         if (d.selected) { ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 5 / zoom; }
@@ -729,17 +706,25 @@ class NetworkRenderer {
         ctx.fill();
         ctx.restore();
 
-        // ── Puntos de interfaz ────────────────────────────────────────
-        // Redibujar usando las mismas posiciones que _iPos para que los cables conecten
+        // Puntos de interfaz - CON SOPORTE STP
         const n = d.interfaces.length;
         d.interfaces.forEach((intf, i) => {
             const { x: ix, y: iy } = sim._iPos(d, i, n);
             ctx.save();
-            const col = intf.connectedTo
-                ? accent
-                : intf.mediaType === 'fibra'    ? '#f59e0b'
-                : intf.mediaType === 'wireless' ? '#a78bfa'
-                : '#374151';
+            
+            let col;
+            if (d.stp && d.stp.enabled && d.getPortColor) {
+                col = d.getPortColor(i);
+            } else if (intf.connectedTo) {
+                col = accent;
+            } else if (intf.mediaType === 'fibra') {
+                col = '#f59e0b';
+            } else if (intf.mediaType === 'wireless') {
+                col = '#a78bfa';
+            } else {
+                col = '#374151';
+            }
+            
             ctx.fillStyle = col;
             if (intf.connectedTo && d.selected) { ctx.shadowColor = col; ctx.shadowBlur = 4 / zoom; }
             ctx.beginPath();
@@ -756,15 +741,11 @@ class NetworkRenderer {
         const { ctx, zoom } = this;
         ctx.save(); ctx.setLineDash([]); ctx.shadowBlur = 0;
 
-        // ── Intentar ícono personalizado PNG/SVG ─────────────────────
-        // Si existe en assets/icons/, se dibuja y se omite el fallback geométrico.
-        // Si no existe (o aún está cargando por primera vez), se usa el fallback.
         if (this._drawCustomIcon(d.type, cx, cy, s)) {
             ctx.restore();
             return;
         }
 
-        // ── Fallback: ícono geométrico canvas ────────────────────────
         const acc = this._typeAccent(d.type);
         ctx.strokeStyle = acc; ctx.fillStyle = acc;
         ctx.lineWidth = 1.5 / zoom;
@@ -813,7 +794,6 @@ class NetworkRenderer {
         c.beginPath();c.moveTo(cx-s*.5,cy-s*.4);c.lineTo(cx-s*.7,cy-s);c.stroke();
         c.beginPath();c.moveTo(cx+s*.5,cy-s*.4);c.lineTo(cx+s*.7,cy-s);c.stroke();
         for(let i=0;i<4;i++){c.fillStyle=i===0?'#4ade80':col;c.beginPath();c.arc(cx-s*.45+i*s*.32,cy,s*.1,0,Math.PI*2);c.fill();}
-        // WiFi arco si tiene mesh o modo AP
         if(isMeshEnabled || isAPMode){
             c.strokeStyle=col;c.lineWidth=1/z;
             c.beginPath();c.arc(cx+s*.65,cy-s*.6,s*.25,Math.PI+.6,2*Math.PI-.6);c.stroke();
@@ -831,21 +811,16 @@ class NetworkRenderer {
     _icoBridge(cx,cy,s){const c=this.ctx,z=this.zoom;c.strokeStyle='#a78bfa';c.lineWidth=1.4/z;c.beginPath();c.arc(cx-s*.5,cy,s*.4,Math.PI+.3,Math.PI*2-.3);c.stroke();c.beginPath();c.arc(cx+s*.5,cy,s*.4,.3,Math.PI-.3);c.stroke();c.setLineDash([3/z,2/z]);c.beginPath();c.moveTo(cx-s*.1,cy);c.lineTo(cx+s*.1,cy);c.stroke();c.setLineDash([]);c.fillStyle='#a78bfa';c.font=`bold ${s*.22}px sans-serif`;c.textAlign='center';c.textBaseline='middle';c.fillText('↔',cx,cy);}
     _icoCamera(cx,cy,s){
         const c=this.ctx,z=this.zoom;
-        // Soporte/brazo
         c.strokeStyle='#94a3b8';c.lineWidth=1.4/z;
         c.beginPath();c.moveTo(cx-s*.1,cy-s*.8);c.lineTo(cx-s*.1,cy-s*.3);c.stroke();
-        // Cuerpo de cámara domo (caja horizontal)
         c.beginPath();c.roundRect(cx-s*.7,cy-s*.3,s*1.0,s*.45,3/z);c.stroke();
         c.fillStyle='rgba(100,116,139,.15)';c.beginPath();c.roundRect(cx-s*.7,cy-s*.3,s*1.0,s*.45,3/z);c.fill();
-        // Lente
         c.strokeStyle='#94a3b8';c.fillStyle='rgba(56,189,248,.3)';
         c.beginPath();c.arc(cx+s*.2,cy-s*.08,s*.22,0,Math.PI*2);c.fill();c.stroke();
         c.fillStyle='rgba(56,189,248,.6)';
         c.beginPath();c.arc(cx+s*.2,cy-s*.08,s*.1,0,Math.PI*2);c.fill();
-        // LED rojo de grabación
         c.fillStyle='#f43f5e';c.shadowColor='#f43f5e';c.shadowBlur=4/z;
         c.beginPath();c.arc(cx-s*.5,cy-s*.18,s*.09,0,Math.PI*2);c.fill();c.shadowBlur=0;
-        // Base de montaje
         c.strokeStyle='#64748b';c.lineWidth=1/z;
         c.beginPath();c.moveTo(cx-s*.3,cy-s*.8);c.lineTo(cx+s*.1,cy-s*.8);c.stroke();
     }
@@ -856,58 +831,43 @@ class NetworkRenderer {
     _icoSDWAN(cx,cy,s){const c=this.ctx,z=this.zoom;c.strokeStyle='#a78bfa';c.lineWidth=1.5/z;const hex=[];for(let i=0;i<6;i++){const a=i*Math.PI/3-Math.PI/6;hex.push({x:cx+s*Math.cos(a),y:cy+s*Math.sin(a)});}c.beginPath();c.moveTo(hex[0].x,hex[0].y);hex.forEach(p=>c.lineTo(p.x,p.y));c.closePath();c.stroke();c.strokeStyle='rgba(167,139,250,.5)';c.beginPath();c.arc(cx,cy,s*.4,0,Math.PI*2);c.stroke();[[0,3],[1,4],[2,5]].forEach(([a,b])=>{c.strokeStyle='rgba(167,139,250,.35)';c.beginPath();c.moveTo(hex[a].x,hex[a].y);c.lineTo(hex[b].x,hex[b].y);c.stroke();});c.fillStyle='#a78bfa';c.font=`bold ${s*.28}px sans-serif`;c.textAlign='center';c.textBaseline='middle';c.fillText('SD',cx,cy);}
     _icoOLT(cx,cy,s){const c=this.ctx,z=this.zoom;c.strokeStyle='#4ade80';c.lineWidth=1.4/z;c.beginPath();c.roundRect(cx-s,cy-s*.45,s*2,s*.9,2/z);c.stroke();for(let i=0;i<5;i++){c.strokeStyle=`rgba(74,222,128,${.9-i*.15})`;c.lineWidth=1/z;c.beginPath();c.moveTo(cx-s*.7,cy);c.lineTo(cx-s*.7-i*s*.08,cy-(i+1)*s*.12);c.stroke();c.beginPath();c.moveTo(cx-s*.7,cy);c.lineTo(cx-s*.7-i*s*.08,cy+(i+1)*s*.12);c.stroke();}for(let i=0;i<4;i++){c.fillStyle='#4ade80';c.beginPath();c.arc(cx-s*.2+i*s*.3,cy,s*.1,0,Math.PI*2);c.fill();}c.fillStyle='#4ade80';c.font=`bold ${s*.24}px sans-serif`;c.textAlign='center';c.textBaseline='middle';c.fillText('OLT',cx+s*.6,cy);}
     _icoDVR(cx,cy,s){const c=this.ctx,z=this.zoom;c.strokeStyle='#64748b';c.lineWidth=1.4/z;c.beginPath();c.roundRect(cx-s*.9,cy-s*.5,s*1.8,s,2/z);c.stroke();for(let i=0;i<4;i++){const gx=cx-s*.5+i%2*s*.6;const gy=cy-s*.15+Math.floor(i/2)*s*.35;c.strokeStyle='rgba(100,116,139,.7)';c.beginPath();c.roundRect(gx-s*.25,gy-s*.14,s*.5,s*.28,1/z);c.stroke();c.fillStyle='rgba(100,116,139,.4)';c.beginPath();c.arc(gx,gy,s*.1,0,Math.PI*2);c.fill();}c.fillStyle='#f43f5e';c.shadowColor='#f43f5e';c.shadowBlur=4/z;c.beginPath();c.arc(cx+s*.75,cy-s*.35,s*.1,0,Math.PI*2);c.fill();c.shadowBlur=0;c.fillStyle='#f43f5e';c.font=`bold ${s*.18}px sans-serif`;c.textAlign='center';c.textBaseline='middle';c.fillText('REC',cx+s*.75,cy-s*.1);}
-
-    // ── NUEVOS ÍCONOS ─────────────────────────────
     _icoIPPhone(cx,cy,s){
         const c=this.ctx,z=this.zoom;
         c.strokeStyle='#fb923c';c.lineWidth=1.4/z;
-        // Teléfono fijo
         c.beginPath();c.roundRect(cx-s*.6,cy-s*.5,s*1.2,s,3/z);c.stroke();
-        // Auricular
         c.beginPath();c.arc(cx-s*.3,cy-s*.1,s*.28,Math.PI*.8,Math.PI*2.2);c.stroke();
-        // Keypad dots
         for(let r=0;r<2;r++)for(let col=0;col<3;col++){
             c.fillStyle='#fb923c';
             c.beginPath();c.arc(cx-s*.25+col*s*.25,cy+s*.1+r*s*.2,s*.06,0,Math.PI*2);c.fill();
         }
-        // SIP label
         c.fillStyle='#fb923c';c.font=`bold ${s*.22}px sans-serif`;c.textAlign='center';c.textBaseline='middle';
         c.fillText('SIP',cx+s*.5,cy-s*.3);
     }
     _icoControlTerminal(cx,cy,s){
         const c=this.ctx,z=this.zoom;
         c.strokeStyle='#fb923c';c.lineWidth=1.4/z;
-        // Panel box
         c.beginPath();c.roundRect(cx-s*.8,cy-s*.7,s*1.6,s*1.4,3/z);c.stroke();
-        // Screen
         c.fillStyle='rgba(251,146,60,.12)';
         c.beginPath();c.roundRect(cx-s*.6,cy-s*.55,s*1.2,s*.7,2/z);c.fill();c.stroke();
-        // Knobs
         for(let i=0;i<3;i++){c.strokeStyle='#fb923c';c.beginPath();c.arc(cx-s*.4+i*s*.4,cy+s*.35,s*.13,0,Math.PI*2);c.stroke();}
-        // Indicator
         c.fillStyle='#4ade80';c.shadowColor='#4ade80';c.shadowBlur=4/z;
         c.beginPath();c.arc(cx+s*.6,cy-s*.55,s*.1,0,Math.PI*2);c.fill();c.shadowBlur=0;
     }
     _icoPayTerminal(cx,cy,s){
         const c=this.ctx,z=this.zoom;
         c.strokeStyle='#22d3ee';c.lineWidth=1.4/z;
-        // Terminal body
         c.beginPath();c.roundRect(cx-s*.5,cy-s*.9,s,s*1.8,5/z);c.stroke();
-        // Screen
         c.fillStyle='rgba(34,211,238,.12)';
         c.beginPath();c.roundRect(cx-s*.4,cy-s*.8,s*.8,s*.6,2/z);c.fill();c.stroke();
-        // Card slot
         c.setLineDash([3/z,2/z]);
         c.beginPath();c.moveTo(cx-s*.4,cy+s*.1);c.lineTo(cx+s*.4,cy+s*.1);c.stroke();
         c.setLineDash([]);
-        // $ sign
         c.fillStyle='#22d3ee';c.font=`bold ${s*.35}px sans-serif`;c.textAlign='center';c.textBaseline='middle';
         c.fillText('$',cx,cy+s*.5);
     }
     _icoAlarm(cx,cy,s){
         const c=this.ctx,z=this.zoom;
         c.strokeStyle='#f43f5e';c.lineWidth=1.5/z;
-        // Bell shape
         c.fillStyle='rgba(244,63,94,.1)';
         c.beginPath();
         c.moveTo(cx,cy-s);
@@ -918,185 +878,123 @@ class NetworkRenderer {
         c.lineTo(cx-s,cy+s*.4);
         c.bezierCurveTo(cx-s,cy-s*.2,cx-s*.7,cy-s,cx,cy-s);
         c.closePath();c.fill();c.stroke();
-        // Bell clapper
         c.fillStyle='#f43f5e';
         c.beginPath();c.arc(cx,cy+s*.55,s*.13,0,Math.PI*2);c.fill();
-        // Signal waves
         c.strokeStyle='rgba(244,63,94,.5)';c.lineWidth=1/z;
         for(let i=1;i<=2;i++){
             c.beginPath();c.arc(cx,cy,s*(1.2+i*.3),Math.PI+.6,2*Math.PI-.6);c.stroke();
         }
     }
-
-
     _icoServer(cx,cy,s){
         const c=this.ctx,z=this.zoom;
         const col='#06b6d4';
         c.strokeStyle=col; c.lineWidth=1.5/z;
-        // Server body (rack unit)
         const bx=cx-s*.85, bw=s*1.7, uh=s*.38;
         [0,1,2].forEach(i=>{
             const by=cy-s*.55+i*uh;
             c.fillStyle=`rgba(6,182,212,${0.07+i*0.03})`;
             c.beginPath();c.roundRect(bx,by,bw,uh*.88,2/z);c.fill();c.stroke();
-            // LED indicator
             c.fillStyle=i===0?'#4ade80':'rgba(6,182,212,.5)';
             c.beginPath();c.arc(bx+bw-6/z,by+uh*.44,2/z,0,Math.PI*2);c.fill();
-            // Drive bays (small rects)
             for(let d=0;d<3;d++){
                 c.fillStyle='rgba(6,182,212,.3)';
                 c.beginPath();c.roundRect(bx+4/z+d*(s*.35),by+uh*.2,s*.28,uh*.55,1/z);c.fill();
             }
         });
-        // Power button
         c.strokeStyle=col;c.lineWidth=1.2/z;
         c.beginPath();c.arc(cx,cy+s*.72,s*.22,Math.PI*.3,Math.PI*1.7);c.stroke();
         c.beginPath();c.moveTo(cx,cy+s*.5);c.lineTo(cx,cy+s*.72);c.stroke();
     }
-
-    _icoServer(cx,cy,s){
-        const c=this.ctx,z=this.zoom;
-        const col='#06b6d4';
-        c.strokeStyle=col; c.lineWidth=1.5/z;
-        // Server body (rack unit)
-        const bx=cx-s*.85, bw=s*1.7, uh=s*.38;
-        [0,1,2].forEach(i=>{
-            const by=cy-s*.55+i*uh;
-            c.fillStyle=`rgba(6,182,212,${0.07+i*0.03})`;
-            c.beginPath();c.roundRect(bx,by,bw,uh*.88,2/z);c.fill();c.stroke();
-            // LED indicator
-            c.fillStyle=i===0?'#4ade80':'rgba(6,182,212,.5)';
-            c.beginPath();c.arc(bx+bw-6/z,by+uh*.44,2/z,0,Math.PI*2);c.fill();
-            // Drive bays (small rects)
-            for(let d=0;d<3;d++){
-                c.fillStyle='rgba(6,182,212,.3)';
-                c.beginPath();c.roundRect(bx+4/z+d*(s*.35),by+uh*.2,s*.28,uh*.55,1/z);c.fill();
-            }
-        });
-        // Power button
-        c.strokeStyle=col;c.lineWidth=1.2/z;
-        c.beginPath();c.arc(cx,cy+s*.72,s*.22,Math.PI*.3,Math.PI*1.7);c.stroke();
-        c.beginPath();c.moveTo(cx,cy+s*.5);c.lineTo(cx,cy+s*.72);c.stroke();
-    }
-
     _icoSplitter(cx,cy,s){
         const c=this.ctx,z=this.zoom;
         const col='#a78bfa';
         c.strokeStyle=col; c.lineWidth=1.4/z;
-        // Cuerpo central
         c.beginPath();c.roundRect(cx-s*.25,cy-s*.7,s*.5,s*1.4,3/z);c.stroke();
         c.fillStyle='rgba(167,139,250,.12)';c.fill();
-        // Entrada izquierda
         c.strokeStyle=col;c.lineWidth=1.3/z;
         c.beginPath();c.moveTo(cx-s*.25,cy);c.lineTo(cx-s*.9,cy);c.stroke();
         c.beginPath();c.arc(cx-s*.9,cy,s*.12,0,Math.PI*2);c.fillStyle=col;c.fill();
-        // 4 salidas a la derecha
         [-s*.55,-s*.2,s*.2,s*.55].forEach(oy=>{
             c.strokeStyle=col;c.lineWidth=1.3/z;
             c.beginPath();c.moveTo(cx+s*.25,cy+oy);c.lineTo(cx+s*.9,cy+oy);c.stroke();
             c.beginPath();c.arc(cx+s*.9,cy+oy,s*.1,0,Math.PI*2);c.fillStyle=col;c.fill();
         });
-        // Etiqueta
         c.fillStyle=col;c.font=`bold ${s*.22}px sans-serif`;
         c.textAlign='center';c.textBaseline='middle';
         c.fillText('1:4',cx,cy);
     }
-
     _icoADN(cx,cy,s){
         const c=this.ctx,z=this.zoom;
         const col='#f59e0b';
         c.strokeStyle=col;c.lineWidth=1.5/z;
-        // Caja principal
         c.beginPath();c.roundRect(cx-s*.9,cy-s*.55,s*1.8,s*1.1,3/z);
         c.fillStyle='rgba(245,158,11,.1)';c.fill();c.stroke();
-        // Líneas internas (fibras)
         [-.35,0,.35].forEach(oy=>{
             c.strokeStyle=col;c.lineWidth=1/z;
             c.beginPath();c.moveTo(cx-s*.7,cy+oy*s);c.lineTo(cx+s*.7,cy+oy*s);c.stroke();
         });
-        // Conectores
         [-s*.6,s*.6].forEach(ox=>{
             c.fillStyle=col;c.beginPath();
             c.roundRect(cx+ox-s*.1,cy-s*.2,s*.2,s*.4,1/z);c.fill();
         });
-        // Etiqueta
         c.fillStyle=col;c.font=`bold ${s*.26}px sans-serif`;
         c.textAlign='center';c.textBaseline='middle';
         c.fillText('ADN',cx,cy+s*.75);
     }
-
     _icoMufla(cx,cy,s){
         const c=this.ctx,z=this.zoom;
         const col='#94a3b8';
         c.strokeStyle=col;c.lineWidth=1.4/z;
-        // Cuerpo elíptico (forma de mufla/manga)
         c.beginPath();c.ellipse(cx,cy,s*.85,s*.5,0,0,Math.PI*2);
         c.fillStyle='rgba(148,163,184,.1)';c.fill();c.stroke();
-        // Líneas de empalme internas
         c.lineWidth=1/z;
         [-.22,.22].forEach(oy=>{
             c.beginPath();
             c.moveTo(cx-s*.6,cy+oy*s);c.lineTo(cx+s*.6,cy+oy*s);c.stroke();
         });
-        // Cables entrantes / salientes
         c.lineWidth=1.5/z;
         c.beginPath();c.moveTo(cx-s*.85,cy);c.lineTo(cx-s*1.35,cy);c.stroke();
         c.beginPath();c.moveTo(cx+s*.85,cy);c.lineTo(cx+s*1.35,cy);c.stroke();
-        // Puntos de empalme
         [-s*.3,0,s*.3].forEach(ox=>{
             c.fillStyle=col;c.beginPath();c.arc(cx+ox,cy,s*.07,0,Math.PI*2);c.fill();
         });
-        // Etiqueta
         c.fillStyle=col;c.font=`${s*.2}px sans-serif`;
         c.textAlign='center';c.textBaseline='middle';
         c.fillText('MUFLA',cx,cy+s*.75);
     }
-
     _icoCajaNAT(cx,cy,s){
         const c=this.ctx,z=this.zoom;
         const col='#f97316';
         c.strokeStyle=col;c.lineWidth=1.5/z;
-        // Cuerpo más ancho para mostrar puertos fibra+cobre
         c.beginPath();c.roundRect(cx-s*1.05,cy-s*.65,s*2.1,s*1.3,3/z);
         c.fillStyle='rgba(249,115,22,.1)';c.fill();c.stroke();
-        // Flecha NAT (→) en el centro
         c.strokeStyle=col;c.lineWidth=1.4/z;
         c.beginPath();c.moveTo(cx-s*.25,cy);c.lineTo(cx+s*.15,cy);c.stroke();
         c.beginPath();c.moveTo(cx+s*.02,cy-s*.14);c.lineTo(cx+s*.28,cy);
         c.lineTo(cx+s*.02,cy+s*.14);c.stroke();
-        // === Lado WAN izquierdo: fibra (azul) + cobre (naranja) ===
-        // WAN Fibra
         c.fillStyle='#60a5fa';
         c.beginPath();c.arc(cx-s*.82,cy-s*.22,s*.1,0,Math.PI*2);c.fill();
         c.strokeStyle='#60a5fa';c.lineWidth=0.9/z;
         c.beginPath();c.arc(cx-s*.82,cy-s*.22,s*.15,0,Math.PI*2);c.stroke();
-        // WAN Cobre
         c.fillStyle=col;c.lineWidth=1.2/z;
         c.beginPath();c.arc(cx-s*.82,cy+s*.22,s*.1,0,Math.PI*2);c.fill();
         c.strokeStyle=col;c.lineWidth=0.8/z;
         c.beginPath();c.roundRect(cx-s*.88,cy+s*.14,s*.16,s*.16,1/z);c.stroke();
-        // Label WAN
         c.fillStyle='rgba(148,163,184,.9)';c.font=`${s*.17}px sans-serif`;
         c.textAlign='center';c.fillText('WAN',cx-s*.82,cy+s*.52);
-        // === Lado LAN derecho: 2 fibra + 2 cobre ===
-        // LAN Fibra 0
         c.fillStyle='#4ade80';
         c.beginPath();c.arc(cx+s*.72,cy-s*.3,s*.09,0,Math.PI*2);c.fill();
         c.strokeStyle='#4ade80';c.lineWidth=0.8/z;
         c.beginPath();c.arc(cx+s*.72,cy-s*.3,s*.13,0,Math.PI*2);c.stroke();
-        // LAN Fibra 1
         c.fillStyle='#4ade80';
         c.beginPath();c.arc(cx+s*.9,cy-s*.1,s*.09,0,Math.PI*2);c.fill();
         c.strokeStyle='#4ade80';c.lineWidth=0.8/z;
         c.beginPath();c.arc(cx+s*.9,cy-s*.1,s*.13,0,Math.PI*2);c.stroke();
-        // LAN Cobre 0+1 (cuadraditos pequeños)
         c.fillStyle='#86efac';
         c.beginPath();c.roundRect(cx+s*.65,cy+s*.12,s*.14,s*.14,1/z);c.fill();
         c.beginPath();c.roundRect(cx+s*.82,cy+s*.28,s*.14,s*.14,1/z);c.fill();
-        // Label LAN
         c.fillStyle='rgba(148,163,184,.9)';c.font=`${s*.17}px sans-serif`;
         c.textAlign='center';c.fillText('LAN',cx+s*.82,cy+s*.54);
-        // Etiqueta NAT
         c.fillStyle=col;c.font=`bold ${s*.24}px sans-serif`;
         c.textAlign='center';c.textBaseline='middle';
         c.fillText('NAT',cx-s*.3,cy-s*.82);
@@ -1118,7 +1016,6 @@ class NetworkRenderer {
             ctx.strokeStyle = a.selected ? '#fff' : a.color;
             ctx.lineWidth   = (a.selected ? 2 : 1.2) / zoom;
             ctx.beginPath(); ctx.roundRect(a.x - bw/2, a.y - bh/2, bw, bh, bh/2); ctx.fill(); ctx.stroke();
-            // Arrow
             ctx.fillStyle = a.color;
             ctx.beginPath();
             ctx.moveTo(a.x - 5/zoom, a.y + bh/2);
@@ -1150,6 +1047,8 @@ class NetworkRenderer {
             'nat'          : '#fb923c',
             'icmp'         : '#38bdf8',
             'broadcast'    : '#fbbf24',
+            'BPDU'         : '#00F2FF',
+            'BPDU-TCN'     : '#FFD700',
         };
         sim.packets.forEach(p => {
             const path = p.path || [];
@@ -1173,13 +1072,21 @@ class NetworkRenderer {
                 fy = path[idx].y + (path[idx+1].y - path[idx].y) * t;
             }
             const color = typeColors[p.type] || p.color || '#38bdf8';
-            const size  = (p.type && p.type.startsWith('dhcp') ? 7 : 5) / zoom;
+            const size  = (p.type && (p.type === 'BPDU' || p.type === 'BPDU-TCN') ? 7 : 5) / zoom;
 
             ctx.save();
             ctx.fillStyle   = color;
             ctx.shadowColor = color;
             ctx.shadowBlur  = 12 / zoom;
-            ctx.beginPath(); ctx.arc(fx, fy, size, 0, Math.PI*2); ctx.fill();
+            
+            // Para BPDU, dibujar rombo
+            if (p.type === 'BPDU' || p.type === 'BPDU-TCN') {
+                ctx.translate(fx, fy);
+                ctx.rotate(Math.PI / 4);
+                ctx.fillRect(-size, -size, size * 2, size * 2);
+            } else {
+                ctx.beginPath(); ctx.arc(fx, fy, size, 0, Math.PI*2); ctx.fill();
+            }
 
             if (p.label && zoom > 0.5) {
                 ctx.shadowBlur = 0;
